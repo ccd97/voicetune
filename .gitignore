@@ -1,0 +1,7 @@
+.venv/
+.venv-whisperx/
+__pycache__/
+.DS_Store
+.env
+input/
+output/
