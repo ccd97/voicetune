@@ -5,3 +5,8 @@ __pycache__/
 .env
 input/
 output/
+*.egg-info/
+.eggs/
+build/
+dist/
+pip-wheel-metadata/

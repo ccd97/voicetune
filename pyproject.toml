@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["voicetune*"]
+
+[project]
+name = "voicetune"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "av==17.0.0",
+    "soundfile==0.13.1",
+    "numpy>=2.4",
+    "pyloudnorm==0.2.0",
+    "soxr==1.0.0",
+    "Jinja2>=3.1",
+    "python-dotenv>=1.1",
+    "httpx>=0.28",
+    "llama-cpp-python>=0.3",
+    "torch>=2.8",
+    "resemblyzer>=0.1.4",
+    "setuptools==80.10.2",  # resemblyzer -> webrtcvad needs pkg_resources
+]
+
+[project.optional-dependencies]
+local = [
+    "torchaudio>=2.8",
+    "pyannote.audio>=4.0",
+    "whisperx>=3.8",
+    "mlx-whisper>=0.4; sys_platform == 'darwin'",
+]
+aws = [
+    "boto3>=1.38",
+]
+gcp = [
+    "google-cloud-speech>=2.30",
+    "google-cloud-storage>=2.19",
+    "google-cloud-compute>=1.22",
+]
+all = [
+    "voicetune[local,aws,gcp]",
+]

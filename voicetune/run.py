@@ -173,7 +173,7 @@ def main():
     )
     parser.add_argument(
         "--python", type=str, default=None,
-        help="Python interpreter to use (default: auto-detect based on mode)"
+        help="Python interpreter to use (default: current interpreter)"
     )
     parser.add_argument(
         "--finetune-test", action="store_true",
@@ -181,21 +181,7 @@ def main():
     )
     args = parser.parse_args()
 
-    # Pick the right python for the mode
-    if args.python:
-        python = args.python
-    elif args.mode in ("whisperx", "whispermlx", "mlx"):
-        venv = Path(".venv-whisperx/bin/python")
-        if venv.exists():
-            python = str(venv)
-        else:
-            log.error(f".venv-whisperx not found. Create it for {args.mode} mode.")
-            sys.exit(1)
-    else:
-        python = sys.executable
-
-    # For steps that use Claude API (translate, correction), use .venv
-    api_python = str(Path(".venv/bin/python")) if Path(".venv/bin/python").exists() else sys.executable
+    python = args.python or sys.executable
 
     timings = {}
 
@@ -217,7 +203,7 @@ def main():
     log.info(f"Steps to run: {', '.join(f'{STEPS.index(s)+1}.{s}' for s in steps_to_run)}")
 
     if "preprocess" in steps_to_run:
-        timings["preprocess"] = run_step("preprocess", [], python=api_python)
+        timings["preprocess"] = run_step("preprocess", [], python=python)
 
     if "diarize" in steps_to_run:
         diarize_args = ["--mode", args.mode]
@@ -228,17 +214,17 @@ def main():
         timings["diarize"] = run_step("diarize", diarize_args, python=python)
 
     if "scrub" in steps_to_run:
-        timings["scrub"] = run_step("scrub", [], python=api_python)
+        timings["scrub"] = run_step("scrub", [], python=python)
 
     if "translate" in steps_to_run:
         translate_args = []
         scrubbed_dir = Path("output/scrubbed")
         if "scrub" in steps_to_run and scrubbed_dir.exists() and any(scrubbed_dir.glob("*_diarized.json")):
             translate_args = ["--input-dir", str(scrubbed_dir)]
-        timings["translate"] = run_step("translate", translate_args, python=api_python)
+        timings["translate"] = run_step("translate", translate_args, python=python)
 
     if "correction" in steps_to_run:
-        timings["correction"] = run_step("correction", [], python=api_python)
+        timings["correction"] = run_step("correction", [], python=python)
         # Copy corrected output over diarized so segment picks it up
         diarized_dir = Path("output/diarized")
         for f in diarized_dir.glob("*_corrected.json"):
@@ -247,7 +233,7 @@ def main():
             log.info(f"  Copied {f.name} -> {target.name}")
 
     if "segment" in steps_to_run:
-        timings["segment"] = run_step("segment", [], python=api_python)
+        timings["segment"] = run_step("segment", [], python=python)
 
     if "label" in steps_to_run:
         seg_dir = Path("output/segmented")
@@ -269,19 +255,19 @@ def main():
             timings["label-enroll"] = run_step(
                 "label",
                 ["enroll", "--call-id", call_ids[0], "--speaker", speaker],
-                python=api_python,
+                python=python,
             )
 
-        timings["label"] = run_step("label", ["label"], python=api_python)
+        timings["label"] = run_step("label", ["label"], python=python)
 
     if "export" in steps_to_run:
-        timings["export"] = run_step("export", [], python=api_python)
+        timings["export"] = run_step("export", [], python=python)
 
     if "finetune" in steps_to_run:
         finetune_args = []
         if args.finetune_test:
             finetune_args.append("--test")
-        timings["finetune"] = run_step("finetune", finetune_args, python=api_python)
+        timings["finetune"] = run_step("finetune", finetune_args, python=python)
 
     log.info(f"{'=' * 60}")
     log.info("PIPELINE COMPLETE")

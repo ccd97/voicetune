@@ -5,20 +5,21 @@ import logging
 import warnings
 from pathlib import Path
 
-warnings.filterwarnings("ignore", category=UserWarning, module="pyannote")
-
-from dotenv import load_dotenv
-
-from voicetune.common import setup_logging
-
 from .utils import find_preprocessed_wavs
 
-load_dotenv()
-setup_logging()
+warnings.filterwarnings("ignore", category=UserWarning, module="pyannote")
+
 log = logging.getLogger(__name__)
 
 
 def main():
+    from dotenv import load_dotenv
+
+    from voicetune.common import setup_logging
+
+    load_dotenv()
+    setup_logging()
+
     parser = argparse.ArgumentParser(
         description="Speaker diarization + transcription (Step 2 & 3)"
     )
