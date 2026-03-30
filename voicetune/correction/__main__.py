@@ -5,28 +5,38 @@ import json
 import logging
 from pathlib import Path
 
-from dotenv import load_dotenv
-
-from voicetune.common import setup_logging
-
-load_dotenv()
-setup_logging()
 log = logging.getLogger(__name__)
 
 
 def main():
+    from dotenv import load_dotenv
+
+    from voicetune.common import setup_logging
+
+    load_dotenv()
+    setup_logging()
+
     parser = argparse.ArgumentParser(
         description="Claude-based speaker correction using translated transcripts"
     )
     parser.add_argument(
-        "--input-dir", type=Path, default=Path("./output/translated"),
-        help="Directory containing translated JSON files (default: ./output/translated)"
+        "--run-dir", type=Path, default=Path("./output"),
+        help="Base output directory (default: ./output)"
     )
     parser.add_argument(
-        "--output-dir", type=Path, default=Path("./output/diarized"),
-        help="Output directory for corrected diarization (default: ./output/diarized)"
+        "--input-dir", type=Path, default=None,
+        help="Directory containing translated JSON files (default: <run-dir>/translated)"
+    )
+    parser.add_argument(
+        "--output-dir", type=Path, default=None,
+        help="Output directory for corrected diarization (default: <run-dir>/diarized)"
     )
     args = parser.parse_args()
+
+    if args.input_dir is None:
+        args.input_dir = args.run_dir / "translated"
+    if args.output_dir is None:
+        args.output_dir = args.run_dir / "diarized"
 
     translated_files = sorted(args.input_dir.glob("*_translated.json"))
     if not translated_files:

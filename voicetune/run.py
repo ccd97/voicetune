@@ -27,12 +27,11 @@ STEPS = [
 
 OPTIONAL_STEPS = {"scrub", "translate", "correction"}
 
-MANIFEST_PATH = Path("output/manifest.json")
-
 
 class Manifest:
 
-    def __init__(self, config: dict | None = None):
+    def __init__(self, path: Path, config: dict | None = None):
+        self.path = path
         self.data = {
             "started_at": datetime.now(timezone.utc).isoformat(),
             "config": config or {},
@@ -40,16 +39,17 @@ class Manifest:
         }
 
     @classmethod
-    def load(cls, path: Path = MANIFEST_PATH) -> "Manifest":
+    def load(cls, path: Path) -> "Manifest":
         with open(path) as f:
             raw = json.load(f)
         m = cls.__new__(cls)
+        m.path = path
         m.data = raw
         return m
 
-    def save(self, path: Path = MANIFEST_PATH):
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "w") as f:
+    def save(self):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with open(self.path, "w") as f:
             json.dump(self.data, f, indent=2)
 
     def record(self, step: str, status: str, elapsed: float, error: str | None = None):
@@ -171,8 +171,9 @@ def _prompt_speaker(seg_dir: Path, call_id: str) -> str:
 
 
 def run_step(name: str, args: list[str], python: str = sys.executable,
-             manifest: Manifest | None = None):
-    cmd = [python, "-m", f"voicetune.{name}", *args]
+             manifest: Manifest | None = None, run_dir: Path | None = None):
+    run_dir_args = ["--run-dir", str(run_dir)] if run_dir else []
+    cmd = [python, "-m", f"voicetune.{name}", *run_dir_args, *args]
     log.info(f"{'=' * 60}")
     log.info(f"STEP: {name}")
     log.info(f"  cmd: {' '.join(cmd)}")
@@ -220,6 +221,10 @@ def main():
              "or mixed (1,3-5,8). Step names also accepted."
     )
     parser.add_argument(
+        "--run-dir", type=Path, default=Path("./output"),
+        help="Base output directory for all pipeline artifacts (default: ./output)"
+    )
+    parser.add_argument(
         "--python", type=str, default=None,
         help="Python interpreter to use (default: current interpreter)"
     )
@@ -229,11 +234,13 @@ def main():
     )
     parser.add_argument(
         "--resume", action="store_true",
-        help="Resume from the last failed/incomplete step using output/manifest.json"
+        help="Resume from the last failed/incomplete step using manifest.json"
     )
     args = parser.parse_args()
 
     python = args.python or sys.executable
+    run_dir = args.run_dir
+    manifest_path = run_dir / "manifest.json"
 
     timings = {}
 
@@ -253,10 +260,10 @@ def main():
         log.info(f"SKIP_STEPS: {', '.join(sorted(skip))}")
 
     if args.resume:
-        if not MANIFEST_PATH.exists():
-            log.error(f"No manifest found at {MANIFEST_PATH} — nothing to resume")
+        if not manifest_path.exists():
+            log.error(f"No manifest found at {manifest_path} — nothing to resume")
             sys.exit(1)
-        prev = Manifest.load()
+        prev = Manifest.load(manifest_path)
         remaining = prev.first_incomplete(steps_to_run)
         if not remaining:
             log.info("All steps already complete — nothing to resume")
@@ -269,18 +276,21 @@ def main():
         manifest = prev
         manifest.data["resumed_at"] = datetime.now(timezone.utc).isoformat()
     else:
-        manifest = Manifest(config={
+        manifest = Manifest(manifest_path, config={
             "mode": args.mode,
             "num_speakers": args.num_speakers,
             "language": args.language,
             "steps_requested": args.steps,
+            "run_dir": str(run_dir),
         })
 
     manifest.save()
     log.info(f"Steps to run: {', '.join(f'{STEPS.index(s)+1}.{s}' for s in steps_to_run)}")
 
+    step_kw = dict(python=python, manifest=manifest, run_dir=run_dir)
+
     if "preprocess" in steps_to_run:
-        timings["preprocess"] = run_step("preprocess", [], python=python, manifest=manifest)
+        timings["preprocess"] = run_step("preprocess", [], **step_kw)
 
     if "diarize" in steps_to_run:
         diarize_args = ["--mode", args.mode]
@@ -288,32 +298,31 @@ def main():
             diarize_args += ["--num-speakers", str(args.num_speakers)]
         if args.language:
             diarize_args += ["--language", args.language]
-        timings["diarize"] = run_step("diarize", diarize_args, python=python, manifest=manifest)
+        timings["diarize"] = run_step("diarize", diarize_args, **step_kw)
 
     if "scrub" in steps_to_run:
-        timings["scrub"] = run_step("scrub", [], python=python, manifest=manifest)
+        timings["scrub"] = run_step("scrub", [], **step_kw)
 
     if "translate" in steps_to_run:
         translate_args = []
-        scrubbed_dir = Path("output/scrubbed")
+        scrubbed_dir = run_dir / "scrubbed"
         if "scrub" in steps_to_run and scrubbed_dir.exists() and any(scrubbed_dir.glob("*_diarized.json")):
             translate_args = ["--input-dir", str(scrubbed_dir)]
-        timings["translate"] = run_step("translate", translate_args, python=python, manifest=manifest)
+        timings["translate"] = run_step("translate", translate_args, **step_kw)
 
     if "correction" in steps_to_run:
-        timings["correction"] = run_step("correction", [], python=python, manifest=manifest)
-        # Copy corrected output over diarized so segment picks it up
-        diarized_dir = Path("output/diarized")
+        timings["correction"] = run_step("correction", [], **step_kw)
+        diarized_dir = run_dir / "diarized"
         for f in diarized_dir.glob("*_corrected.json"):
             target = diarized_dir / f.name.replace("_corrected.json", "_diarized.json")
             shutil.copy2(f, target)
             log.info(f"  Copied {f.name} -> {target.name}")
 
     if "segment" in steps_to_run:
-        timings["segment"] = run_step("segment", [], python=python, manifest=manifest)
+        timings["segment"] = run_step("segment", [], **step_kw)
 
     if "label" in steps_to_run:
-        seg_dir = Path("output/segmented")
+        seg_dir = run_dir / "segmented"
         call_ids = sorted(
             d.name for d in seg_dir.iterdir()
             if d.is_dir() and (d / "dialogue.json").exists()
@@ -323,7 +332,7 @@ def main():
             log.error("No segmented calls found for labeling")
             sys.exit(1)
 
-        voiceprint = Path("output/voiceprint.npy")
+        voiceprint = run_dir / "voiceprint.npy"
         if voiceprint.exists():
             log.info(f"Using existing voiceprint: {voiceprint}")
         else:
@@ -331,19 +340,19 @@ def main():
             timings["label-enroll"] = run_step(
                 "label",
                 ["enroll", "--call-id", call_ids[0], "--speaker", speaker],
-                python=python, manifest=manifest,
+                **step_kw,
             )
 
-        timings["label"] = run_step("label", ["label"], python=python, manifest=manifest)
+        timings["label"] = run_step("label", ["label"], **step_kw)
 
     if "export" in steps_to_run:
-        timings["export"] = run_step("export", [], python=python, manifest=manifest)
+        timings["export"] = run_step("export", [], **step_kw)
 
     if "finetune" in steps_to_run:
         finetune_args = []
         if args.finetune_test:
             finetune_args.append("--test")
-        timings["finetune"] = run_step("finetune", finetune_args, python=python, manifest=manifest)
+        timings["finetune"] = run_step("finetune", finetune_args, **step_kw)
 
     log.info(f"{'=' * 60}")
     log.info("PIPELINE COMPLETE")

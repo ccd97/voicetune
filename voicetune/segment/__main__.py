@@ -4,35 +4,47 @@ import argparse
 import logging
 from pathlib import Path
 
-from voicetune.common import setup_logging
-
 from .pipeline import process_file
 
-setup_logging()
 log = logging.getLogger(__name__)
 
 
 def main():
+    from voicetune.common import setup_logging
+
+    setup_logging()
+
     parser = argparse.ArgumentParser(
         description="Turn segmentation: merge same-speaker turns, cut per-turn audio (Step 4)"
     )
     parser.add_argument(
-        "--diarized-dir", type=Path, default=Path("./output/diarized"),
-        help="Directory containing diarized JSON files (default: ./output/diarized)"
+        "--run-dir", type=Path, default=Path("./output"),
+        help="Base output directory (default: ./output)"
     )
     parser.add_argument(
-        "--audio-dir", type=Path, default=Path("./output/preprocessed"),
-        help="Directory containing preprocessed audio (default: ./output/preprocessed)"
+        "--diarized-dir", type=Path, default=None,
+        help="Directory containing diarized JSON files (default: <run-dir>/diarized)"
     )
     parser.add_argument(
-        "--output-dir", type=Path, default=Path("./output/segmented"),
-        help="Directory for segmented output (default: ./output/segmented)"
+        "--audio-dir", type=Path, default=None,
+        help="Directory containing preprocessed audio (default: <run-dir>/preprocessed)"
+    )
+    parser.add_argument(
+        "--output-dir", type=Path, default=None,
+        help="Directory for segmented output (default: <run-dir>/segmented)"
     )
     parser.add_argument(
         "--merge-gap", type=float, default=0.5,
         help="Max gap (seconds) between turns to merge same-speaker segments (default: 0.5)"
     )
     args = parser.parse_args()
+
+    if args.diarized_dir is None:
+        args.diarized_dir = args.run_dir / "diarized"
+    if args.audio_dir is None:
+        args.audio_dir = args.run_dir / "preprocessed"
+    if args.output_dir is None:
+        args.output_dir = args.run_dir / "segmented"
 
     if not args.diarized_dir.is_dir():
         log.error(f"Diarized directory does not exist: {args.diarized_dir}")

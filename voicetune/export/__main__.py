@@ -5,25 +5,30 @@ import json
 import logging
 from pathlib import Path
 
-from voicetune.common import setup_logging
-
 from .pipeline import process_call
 
-setup_logging()
 log = logging.getLogger(__name__)
 
 
 def main():
+    from voicetune.common import setup_logging
+
+    setup_logging()
+
     parser = argparse.ArgumentParser(
         description="Export segmented dialogues to Fish Speech fine-tuning format"
     )
     parser.add_argument(
-        "--segmented-dir", type=Path, default=Path("./output/segmented"),
-        help="Directory containing segmented call output (default: ./output/segmented)"
+        "--run-dir", type=Path, default=Path("./output"),
+        help="Base output directory (default: ./output)"
     )
     parser.add_argument(
-        "--output-dir", type=Path, default=Path("./output/fish-speech/data/me"),
-        help="Output directory for .wav + .lab pairs (default: ./output/fish-speech/data/me)"
+        "--segmented-dir", type=Path, default=None,
+        help="Directory containing segmented call output (default: <run-dir>/segmented)"
+    )
+    parser.add_argument(
+        "--output-dir", type=Path, default=None,
+        help="Output directory for .wav + .lab pairs (default: <run-dir>/fish-speech/data/me)"
     )
     parser.add_argument(
         "--min-duration", type=float, default=1.0,
@@ -34,6 +39,11 @@ def main():
         help="Skip turns longer than this (seconds, default: 60.0)"
     )
     args = parser.parse_args()
+
+    if args.segmented_dir is None:
+        args.segmented_dir = args.run_dir / "segmented"
+    if args.output_dir is None:
+        args.output_dir = args.run_dir / "fish-speech" / "data" / "me"
 
     dialogue_files = sorted(args.segmented_dir.glob("*/dialogue.json"))
     if not dialogue_files:

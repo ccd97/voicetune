@@ -4,19 +4,24 @@ import argparse
 import logging
 from pathlib import Path
 
-from voicetune.common import setup_logging
-
 from .pipeline import SUPPORTED_EXTENSIONS, process_file
 
-setup_logging()
 log = logging.getLogger(__name__)
 
 
 def main():
+    from voicetune.common import setup_logging
+
+    setup_logging()
+
     parser = argparse.ArgumentParser(description="Pre-process call recordings for dataset pipeline")
+    parser.add_argument("--run-dir", type=Path, default=Path("./output"), help="Base output directory (default: ./output)")
     parser.add_argument("--input-dir", type=Path, default=Path("./input"), help="Directory containing raw audio files")
-    parser.add_argument("--output-dir", type=Path, default=Path("./output/preprocessed"), help="Directory for processed output")
+    parser.add_argument("--output-dir", type=Path, default=None, help="Directory for processed output (default: <run-dir>/preprocessed)")
     args = parser.parse_args()
+
+    if args.output_dir is None:
+        args.output_dir = args.run_dir / "preprocessed"
 
     if not args.input_dir.is_dir():
         log.error(f"Input directory does not exist: {args.input_dir}")

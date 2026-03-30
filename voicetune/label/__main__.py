@@ -4,14 +4,9 @@ import argparse
 import logging
 from pathlib import Path
 
-from voicetune.common import setup_logging
-
 from .pipeline import analyze_speakers, apply_labels, enroll
 
-setup_logging()
 log = logging.getLogger(__name__)
-
-VOICEPRINT_PATH = Path("./output/voiceprint.npy")
 
 
 def prompt_speaker_selection(call_id: str, analysis: dict, auto_skip: bool) -> str | None:
@@ -47,8 +42,16 @@ def prompt_speaker_selection(call_id: str, analysis: dict, auto_skip: bool) -> s
 
 
 def main():
+    from voicetune.common import setup_logging
+
+    setup_logging()
+
     parser = argparse.ArgumentParser(
         description="Speaker labeling: enroll voiceprint or label calls as 'me' vs 'other'"
+    )
+    parser.add_argument(
+        "--run-dir", type=Path, default=Path("./output"),
+        help="Base output directory (default: ./output)"
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -63,23 +66,23 @@ def main():
         help="Your speaker label in that call (e.g. 'spk_0' or 'spk_1')"
     )
     enroll_parser.add_argument(
-        "--segmented-dir", type=Path, default=Path("./output/segmented"),
-        help="Directory containing segmented output (default: ./output/segmented)"
+        "--segmented-dir", type=Path, default=None,
+        help="Directory containing segmented output (default: <run-dir>/segmented)"
     )
     enroll_parser.add_argument(
-        "--voiceprint", type=Path, default=VOICEPRINT_PATH,
-        help=f"Where to save voiceprint (default: {VOICEPRINT_PATH})"
+        "--voiceprint", type=Path, default=None,
+        help="Where to save voiceprint (default: <run-dir>/voiceprint.npy)"
     )
 
     # Label subcommand
     label_parser = subparsers.add_parser("label", help="Label speakers in segmented calls")
     label_parser.add_argument(
-        "--segmented-dir", type=Path, default=Path("./output/segmented"),
-        help="Directory containing segmented output (default: ./output/segmented)"
+        "--segmented-dir", type=Path, default=None,
+        help="Directory containing segmented output (default: <run-dir>/segmented)"
     )
     label_parser.add_argument(
-        "--voiceprint", type=Path, default=VOICEPRINT_PATH,
-        help=f"Path to voiceprint file (default: {VOICEPRINT_PATH})"
+        "--voiceprint", type=Path, default=None,
+        help="Path to voiceprint file (default: <run-dir>/voiceprint.npy)"
     )
     label_parser.add_argument(
         "--call-id", type=str, default=None,
@@ -91,6 +94,11 @@ def main():
     )
 
     args = parser.parse_args()
+
+    if args.segmented_dir is None:
+        args.segmented_dir = args.run_dir / "segmented"
+    if args.voiceprint is None:
+        args.voiceprint = args.run_dir / "voiceprint.npy"
 
     if args.command == "enroll":
         enroll(args.segmented_dir, args.call_id, args.speaker, args.voiceprint)

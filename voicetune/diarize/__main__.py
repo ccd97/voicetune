@@ -24,16 +24,20 @@ def main():
         description="Speaker diarization + transcription (Step 2 & 3)"
     )
     parser.add_argument(
+        "--run-dir", type=Path, default=Path("./output"),
+        help="Base output directory (default: ./output)"
+    )
+    parser.add_argument(
         "--mode", choices=["aws", "whisperx", "whispermlx", "mlx", "llamacpp"], required=True,
         help="Diarization backend: 'aws', 'whisperx', 'whispermlx' (WhisperX on Apple Silicon via MLX), 'mlx' (Apple Silicon), or 'llamacpp' (Gemma 4 audio)"
     )
     parser.add_argument(
-        "--input-dir", type=Path, default=Path("./output/preprocessed"),
-        help="Directory containing preprocessed output (default: ./output/preprocessed)"
+        "--input-dir", type=Path, default=None,
+        help="Directory containing preprocessed output (default: <run-dir>/preprocessed)"
     )
     parser.add_argument(
-        "--output-dir", type=Path, default=Path("./output/diarized"),
-        help="Directory for diarization output (default: ./output/diarized)"
+        "--output-dir", type=Path, default=None,
+        help="Directory for diarization output (default: <run-dir>/diarized)"
     )
     parser.add_argument(
         "--num-speakers", type=int, default=None,
@@ -44,6 +48,11 @@ def main():
         help="Force language code, e.g. 'en-US' (default: auto-detect). Use when auto-detect gets it wrong."
     )
     args = parser.parse_args()
+
+    if args.input_dir is None:
+        args.input_dir = args.run_dir / "preprocessed"
+    if args.output_dir is None:
+        args.output_dir = args.run_dir / "diarized"
 
     wav_files = find_preprocessed_wavs(args.input_dir)
     if not wav_files:
