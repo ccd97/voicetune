@@ -8,18 +8,20 @@ Label speakers as "me" vs "other" using a voiceprint embedding. Two-phase proces
 
 ## CLI Args
 
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--input-dir` | `./output/segmented` | Segmented output directory |
+
 ### Enroll subcommand
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--call-id` | (required) | Reference call to use for enrollment |
 | `--speaker` | (required) | Your speaker label in that call (e.g. `spk_0`) |
-| `--segmented-dir` | `./output/segmented` | Segmented output directory |
 | `--voiceprint` | `./output/voiceprint.npy` | Where to save voiceprint |
 
 ### Label subcommand
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--segmented-dir` | `./output/segmented` | Segmented output directory |
 | `--voiceprint` | `./output/voiceprint.npy` | Path to voiceprint file |
 | `--call-id` | all calls | Label a specific call only |
 

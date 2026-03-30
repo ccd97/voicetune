@@ -22,7 +22,7 @@ def main():
         help="Base output directory (default: ./output)"
     )
     parser.add_argument(
-        "--diarized-dir", type=Path, default=None,
+        "--input-dir", type=Path, default=None,
         help="Directory containing diarized JSON files (default: <run-dir>/diarized)"
     )
     parser.add_argument(
@@ -39,20 +39,20 @@ def main():
     )
     args = parser.parse_args()
 
-    if args.diarized_dir is None:
-        args.diarized_dir = args.run_dir / "diarized"
+    if args.input_dir is None:
+        args.input_dir = args.run_dir / "diarized"
     if args.audio_dir is None:
         args.audio_dir = args.run_dir / "preprocessed"
     if args.output_dir is None:
         args.output_dir = args.run_dir / "segmented"
 
-    if not args.diarized_dir.is_dir():
-        log.error(f"Diarized directory does not exist: {args.diarized_dir}")
+    if not args.input_dir.is_dir():
+        log.error(f"Input directory does not exist: {args.input_dir}")
         return
 
-    json_files = sorted(args.diarized_dir.glob("*_diarized.json"))
+    json_files = sorted(args.input_dir.glob("*_diarized.json"))
     if not json_files:
-        log.warning(f"No diarized JSON files found in {args.diarized_dir}")
+        log.warning(f"No diarized JSON files found in {args.input_dir}")
         return
 
     log.info(f"Found {len(json_files)} file(s)")

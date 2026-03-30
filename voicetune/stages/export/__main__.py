@@ -5,7 +5,7 @@ import json
 import logging
 from pathlib import Path
 
-from .pipeline import process_call
+from .pipeline import process_file
 
 log = logging.getLogger(__name__)
 
@@ -23,7 +23,7 @@ def main():
         help="Base output directory (default: ./output)"
     )
     parser.add_argument(
-        "--segmented-dir", type=Path, default=None,
+        "--input-dir", type=Path, default=None,
         help="Directory containing segmented call output (default: <run-dir>/segmented)"
     )
     parser.add_argument(
@@ -40,14 +40,14 @@ def main():
     )
     args = parser.parse_args()
 
-    if args.segmented_dir is None:
-        args.segmented_dir = args.run_dir / "segmented"
+    if args.input_dir is None:
+        args.input_dir = args.run_dir / "segmented"
     if args.output_dir is None:
         args.output_dir = args.run_dir / "fish-speech" / "data" / "me"
 
-    dialogue_files = sorted(args.segmented_dir.glob("*/dialogue.json"))
+    dialogue_files = sorted(args.input_dir.glob("*/dialogue.json"))
     if not dialogue_files:
-        log.warning(f"No segmented dialogues found in {args.segmented_dir}")
+        log.warning(f"No segmented dialogues found in {args.input_dir}")
         return
 
     log.info(f"Found {len(dialogue_files)} call(s)")
@@ -57,7 +57,7 @@ def main():
     all_stats = []
 
     for dialogue_path in dialogue_files:
-        stats = process_call(
+        stats = process_file(
             dialogue_path, args.output_dir,
             min_duration=args.min_duration,
             max_duration=args.max_duration,

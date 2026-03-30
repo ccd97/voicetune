@@ -53,6 +53,10 @@ def main():
         "--run-dir", type=Path, default=Path("./output"),
         help="Base output directory (default: ./output)"
     )
+    parser.add_argument(
+        "--input-dir", type=Path, default=None,
+        help="Directory containing segmented output (default: <run-dir>/segmented)"
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     # Enroll subcommand
@@ -66,20 +70,12 @@ def main():
         help="Your speaker label in that call (e.g. 'spk_0' or 'spk_1')"
     )
     enroll_parser.add_argument(
-        "--segmented-dir", type=Path, default=None,
-        help="Directory containing segmented output (default: <run-dir>/segmented)"
-    )
-    enroll_parser.add_argument(
         "--voiceprint", type=Path, default=None,
         help="Where to save voiceprint (default: <run-dir>/voiceprint.npy)"
     )
 
     # Label subcommand
     label_parser = subparsers.add_parser("label", help="Label speakers in segmented calls")
-    label_parser.add_argument(
-        "--segmented-dir", type=Path, default=None,
-        help="Directory containing segmented output (default: <run-dir>/segmented)"
-    )
     label_parser.add_argument(
         "--voiceprint", type=Path, default=None,
         help="Path to voiceprint file (default: <run-dir>/voiceprint.npy)"
@@ -95,13 +91,13 @@ def main():
 
     args = parser.parse_args()
 
-    if args.segmented_dir is None:
-        args.segmented_dir = args.run_dir / "segmented"
+    if args.input_dir is None:
+        args.input_dir = args.run_dir / "segmented"
     if args.voiceprint is None:
         args.voiceprint = args.run_dir / "voiceprint.npy"
 
     if args.command == "enroll":
-        enroll(args.segmented_dir, args.call_id, args.speaker, args.voiceprint)
+        enroll(args.input_dir, args.call_id, args.speaker, args.voiceprint)
 
     elif args.command == "label":
         if not args.voiceprint.exists():
@@ -112,19 +108,19 @@ def main():
             call_ids = [args.call_id]
         else:
             call_ids = sorted(
-                d.name for d in args.segmented_dir.iterdir()
+                d.name for d in args.input_dir.iterdir()
                 if d.is_dir() and (d / "dialogue.json").exists()
             )
 
         if not call_ids:
-            log.warning(f"No segmented calls found in {args.segmented_dir}")
+            log.warning(f"No segmented calls found in {args.input_dir}")
             return
 
         log.info(f"Labeling {len(call_ids)} call(s)")
         skipped = 0
         for call_id in call_ids:
             log.info(f"Processing {call_id}")
-            analysis = analyze_speakers(args.segmented_dir, call_id, args.voiceprint)
+            analysis = analyze_speakers(args.input_dir, call_id, args.voiceprint)
 
             if analysis["needs_review"]:
                 me_speaker = prompt_speaker_selection(call_id, analysis, args.auto_skip)
@@ -134,7 +130,7 @@ def main():
             else:
                 me_speaker = analysis["best_match"]
 
-            apply_labels(args.segmented_dir, analysis, me_speaker)
+            apply_labels(args.input_dir, analysis, me_speaker)
 
         log.info(f"Done ({skipped} skipped)" if skipped else "Done")
 

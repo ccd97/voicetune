@@ -13,7 +13,7 @@ Merge consecutive same-speaker turns, cut per-turn WAV files from the preprocess
 
 | Flag             | Default                 | Description                                      |
 | ---------------- | ----------------------- | ------------------------------------------------ |
-| `--diarized-dir` | `./output/diarized`     | Directory with diarized JSON files               |
+| `--input-dir`    | `./output/diarized`     | Directory with diarized JSON files               |
 | `--audio-dir`    | `./output/preprocessed` | Directory with preprocessed WAV files            |
 | `--output-dir`   | `./output/segmented`    | Where to write segmented output                  |
 | `--merge-gap`    | `0.5`                   | Max gap (seconds) to merge same-speaker segments |

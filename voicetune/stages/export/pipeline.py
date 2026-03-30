@@ -21,7 +21,7 @@ MIN_DURATION = 1.0   # skip turns shorter than 1s
 MAX_DURATION = 60.0  # skip turns longer than 60s
 
 
-def process_call(
+def process_file(
     dialogue_path: Path,
     output_dir: Path,
     min_duration: float = MIN_DURATION,

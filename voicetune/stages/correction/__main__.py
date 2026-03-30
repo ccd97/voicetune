@@ -5,6 +5,8 @@ import json
 import logging
 from pathlib import Path
 
+from .pipeline import process_file
+
 log = logging.getLogger(__name__)
 
 
@@ -44,9 +46,10 @@ def main():
         return
 
     log.info(f"Found {len(translated_files)} translated file(s)")
+    args.output_dir.mkdir(parents=True, exist_ok=True)
 
-    from .pipeline import process_file
-
+    succeeded = 0
+    failed = []
     rejections = []
     for path in translated_files:
         try:
@@ -62,8 +65,14 @@ def main():
                     f"  {result['call_id']}: {n_turns} turns, "
                     f"speakers: {', '.join(f'{s}({names.get(s, '?')})' for s in speakers)}"
                 )
+            succeeded += 1
         except Exception:
             log.exception(f"Failed to process {path}")
+            failed.append(path.name)
+
+    log.info(f"Summary: {succeeded} succeeded, {len(failed)} failed")
+    if failed:
+        log.info(f"Failed: {', '.join(failed)}")
 
     if rejections:
         log.info(f"Rejected {len(rejections)}/{len(translated_files)} conversation(s)")

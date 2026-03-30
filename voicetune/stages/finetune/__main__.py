@@ -22,7 +22,7 @@ def main():
         help="Base output directory (default: ./output)"
     )
     parser.add_argument(
-        "--data-dir", type=Path, default=None,
+        "--input-dir", type=Path, default=None,
         help="Directory containing exported wav+lab pairs (default: <run-dir>/fish-speech/data)"
     )
     parser.add_argument(
@@ -39,13 +39,13 @@ def main():
     )
     args = parser.parse_args()
 
-    if args.data_dir is None:
-        args.data_dir = args.run_dir / "fish-speech" / "data"
+    if args.input_dir is None:
+        args.input_dir = args.run_dir / "fish-speech" / "data"
     if args.output_dir is None:
         args.output_dir = args.run_dir / "finetune"
 
     run_finetune(
-        data_dir=args.data_dir,
+        data_dir=args.input_dir,
         max_steps=args.max_steps,
         test=args.test,
         output_dir=args.output_dir,

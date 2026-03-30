@@ -9,7 +9,7 @@ Export "me" turns as `.wav` + `.lab` pairs in the directory structure expected b
 ## CLI Args
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--segmented-dir` | `./output/segmented` | Directory with segmented call output |
+| `--input-dir` | `./output/segmented` | Directory with segmented call output |
 | `--output-dir` | `./output/fish-speech/data/me` | Output directory for .wav + .lab pairs |
 | `--min-duration` | `1.0` | Skip turns shorter than this (seconds) |
 | `--max-duration` | `60.0` | Skip turns longer than this (seconds) |
