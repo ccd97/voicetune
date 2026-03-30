@@ -3,11 +3,11 @@
 Pipeline steps:
     1. preprocess  — normalize audio to 16kHz 16-bit WAV
     2. diarize     — speaker diarization + transcription
-    3. translate   — translate non-English turns via Claude
-    4. correction  — fix speaker labels via Claude
-    5. segment     — merge turns, cut per-turn audio
-    6. label       — identify 'me' vs 'other' via voiceprint
-    7. pairformat  — build (prompt, response) training pairs
+    3. scrub       — PII redaction via local LLM (optional, SKIP_STEPS=scrub)
+    4. translate   — translate non-English turns via Claude (optional, SKIP_STEPS=translate)
+    5. correction  — fix speaker labels via Claude (optional, SKIP_STEPS=correction)
+    6. segment     — merge turns, cut per-turn audio
+    7. label       — identify 'me' vs 'other' via voiceprint
     8. export      — export to Fish Speech format
     9. finetune    — LoRA fine-tune Fish Speech S2 Pro
 """

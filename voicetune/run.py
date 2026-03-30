@@ -1,8 +1,9 @@
-"""One-click pipeline: preprocess → diarize → scrub → translate → correction → segment → label → pairformat → export → finetune."""
+"""One-click pipeline: preprocess → diarize → scrub → translate → correction → segment → label → export → finetune."""
 
 import argparse
 import json
 import logging
+import os
 import shutil
 import subprocess
 import sys
@@ -19,10 +20,21 @@ STEPS = [
     "correction",     # 5
     "segment",        # 6
     "label",          # 7
-    "pairformat",     # 8
-    "export",         # 9
-    "finetune",       # 10
+    "export",         # 8
+    "finetune",       # 9
 ]
+
+OPTIONAL_STEPS = {"scrub", "translate", "correction"}
+
+
+def get_skip_steps() -> set[str]:
+    skipped = set()
+    for step in OPTIONAL_STEPS:
+        if os.environ.get(f"SKIP_{step.upper()}", "").lower() in ("1", "true", "yes"):
+            skipped.add(step)
+    if "translate" in skipped and "correction" not in skipped:
+        raise ValueError("Cannot skip translate without also skipping correction (correction reads translate output)")
+    return skipped
 
 
 def parse_steps(spec: str) -> list[str]:
@@ -189,12 +201,18 @@ def main():
 
     try:
         steps_to_run = parse_steps(args.steps)
+        skip = get_skip_steps()
     except ValueError as e:
         log.error(str(e))
         log.info("Available steps:")
         for i, name in enumerate(STEPS, 1):
-            log.info(f"  {i}. {name}")
+            opt = " (optional)" if name in OPTIONAL_STEPS else ""
+            log.info(f"  {i}. {name}{opt}")
         sys.exit(1)
+
+    if skip:
+        steps_to_run = [s for s in steps_to_run if s not in skip]
+        log.info(f"SKIP_STEPS: {', '.join(sorted(skip))}")
 
     log.info(f"Steps to run: {', '.join(f'{STEPS.index(s)+1}.{s}' for s in steps_to_run)}")
 
@@ -215,7 +233,7 @@ def main():
     if "translate" in steps_to_run:
         translate_args = []
         scrubbed_dir = Path("output/scrubbed")
-        if scrubbed_dir.exists() and any(scrubbed_dir.glob("*_diarized.json")):
+        if "scrub" in steps_to_run and scrubbed_dir.exists() and any(scrubbed_dir.glob("*_diarized.json")):
             translate_args = ["--input-dir", str(scrubbed_dir)]
         timings["translate"] = run_step("translate", translate_args, python=api_python)
 
@@ -255,9 +273,6 @@ def main():
             )
 
         timings["label"] = run_step("label", ["label"], python=api_python)
-
-    if "pairformat" in steps_to_run:
-        timings["pairformat"] = run_step("pairformat", [], python=api_python)
 
     if "export" in steps_to_run:
         timings["export"] = run_step("export", [], python=api_python)
