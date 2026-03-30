@@ -5,6 +5,8 @@ import logging
 import os
 from pathlib import Path
 
+from voicetune import prompts
+
 log = logging.getLogger(__name__)
 
 ENGLISH_CODES = {"en-US", "en-GB", "en-AU", "en-IN", "en"}
@@ -33,17 +35,8 @@ def needs_translation(text: str, language: str) -> bool:
 
 def translate_batch(http_client, base_url: str, auth_token: str, model: str, turns: list[dict], source_lang: str) -> list[str]:
     """Translate multiple turns in a single LLM call for efficiency."""
-    numbered_texts = "\n".join(f"{i+1}. {t['text']}" for i, t in enumerate(turns))
-
-    prompt = f"""Translate the following {source_lang} dialogue turns to natural English.
-These are from a phone call transcript. Preserve the conversational tone and meaning.
-If a turn contains transliterated English (e.g., Devanagari script writing English words),
-convert it back to proper English rather than literally translating.
-
-Return ONLY the translations, one per line, numbered to match the input.
-Do not add explanations or notes.
-
-{numbered_texts}"""
+    numbered_turns = "\n".join(f"{i+1}. {t['text']}" for i, t in enumerate(turns))
+    prompt = prompts.render("translate.j2", source_lang=source_lang, numbered_turns=numbered_turns)
 
     response = http_client.post(
         f"{base_url}/model/{model}/invoke",

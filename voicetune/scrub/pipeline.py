@@ -6,6 +6,8 @@ import os
 from enum import Enum
 from pathlib import Path
 
+from voicetune import prompts
+
 log = logging.getLogger(__name__)
 
 BATCH_SIZE = 20
@@ -52,19 +54,8 @@ SENSITIVE_TYPES_LIST = ", ".join(t.value for t in SensitiveDataType)
 
 
 def build_prompt(turns: list[dict]) -> str:
-    numbered = "\n".join(f"{i+1}. [{t['speaker']}] {t['text']}" for i, t in enumerate(turns))
-    return f"""You are a PII detection system. Review each numbered dialogue turn below and determine if it contains any of these sensitive data types: {SENSITIVE_TYPES_LIST}.
-
-For each turn, respond with ONLY its number and either "CLEAN" or "SENSITIVE".
-Do not add explanations. One line per turn.
-
-Example response format:
-1. CLEAN
-2. SENSITIVE
-3. CLEAN
-
-Dialogue turns:
-{numbered}"""
+    numbered_turns = "\n".join(f"{i+1}. [{t['speaker']}] {t['text']}" for i, t in enumerate(turns))
+    return prompts.render("scrub.j2", sensitive_types=SENSITIVE_TYPES_LIST, numbered_turns=numbered_turns)
 
 
 def classify_batch(llm, turns: list[dict]) -> list[bool]:

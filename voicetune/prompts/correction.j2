@@ -1,0 +1,48 @@
+You are analyzing a phone call transcript that was automatically diarized by AWS Transcribe.
+The speaker labels (spk_0, spk_1, spk_2, etc.) may have errors — the same person might be
+split across multiple labels, or different people might share a label.
+
+Your task: review the conversation and correct the speaker assignments based on:
+1. Conversational flow (who responds to whom, topic continuity)
+2. Names mentioned (people referring to each other by name)
+3. Consistency of speaking style and topic knowledge
+4. Turn-taking patterns
+
+{{ transcript_section }}
+
+Return a JSON object with the following structure:
+
+{
+  "confidence": 0.85,
+  "issues": [],
+  "assignments": [
+    {"index": {{ offset }}, "speaker": "spk_0", "name": "...", "reasoning": "..."},
+    ...
+  ]
+}
+
+The "assignments" array must have one element per turn in TURNS TO CORRECT (indices {{ offset }} to {{ end_index }}).
+
+"confidence" is your overall confidence (0.0 to 1.0) in the diarization quality of this transcript.
+Score LOW (< 0.5) when: speakers are impossible to distinguish, the transcript is garbled or
+nonsensical, turns are clearly misaligned with audio timing, or the conversation structure
+makes no sense. Score HIGH (> 0.8) when: speaker identities are clear, conversation flows
+naturally, and you only needed minor corrections.
+
+"issues" is an array of quality problems you detected. Use ONLY these values:
+- "improper_diarization" — speaker boundaries are clearly wrong (turns split mid-sentence, overlapping segments attributed to wrong speakers)
+- "incorrect_speaker_assignment" — speakers are systematically swapped or confused throughout
+- "incorrect_speaker_count" — the number of distinct speakers in the transcript doesn't match the actual conversation (e.g. one person split into multiple labels, or two people merged into one)
+- "garbled_transcript" — the text is mostly unintelligible, full of ASR errors, or doesn't form coherent speech
+- "nonsensical_conversation" — the conversation flow makes no logical sense even after correction (random unrelated utterances, no coherent topic)
+- "language_mismatch" — the transcript language doesn't match the actual spoken language (e.g. Hindi transcribed as English, or mixed-language call transcribed as single language)
+
+Leave "issues" as an empty array if the transcript is fine.
+
+Rules:
+- Keep the original spk_N labels where they are correct
+- If you identify a speaker by name, include it in the "name" field (otherwise null)
+- Use "reasoning" to briefly explain your assignment
+- If a turn is clearly misattributed, reassign it
+- The number of distinct speakers should reflect the actual conversation participants
+- Return ONLY the JSON object, no other text

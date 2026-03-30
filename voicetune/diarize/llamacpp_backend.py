@@ -15,21 +15,13 @@ import os
 import re
 from pathlib import Path
 
+from voicetune import prompts
+
 from .utils import get_call_id, save_result
 
 log = logging.getLogger(__name__)
 
 _llm = None
-
-SYSTEM_PROMPT = (
-    "You are a transcription assistant. You will receive an audio recording. "
-    "Transcribe it faithfully, identifying each speaker. "
-    "Output ONLY a JSON array, no markdown fences, no commentary. "
-    'Each element must have "speaker" and "text" keys. '
-    "Use consistent speaker labels like Speaker_1, Speaker_2, etc. "
-    'Example: [{"speaker": "Speaker_1", "text": "Hello"}, '
-    '{"speaker": "Speaker_2", "text": "Hi there"}]'
-)
 
 
 def _get_llm():
@@ -110,19 +102,14 @@ def diarize(audio_path: Path, output_dir: Path, num_speakers: int | None = None,
     log.info(f"Transcribing + diarizing with llama.cpp: {audio_path.name}")
     audio_uri = _audio_to_data_uri(audio_path)
 
+    user_text = prompts.render("diarize_user.j2", num_speakers=num_speakers, language=language)
     user_content = [
         {"type": "image_url", "image_url": {"url": audio_uri}},
-        {"type": "text", "text": "Transcribe this audio recording with speaker labels."},
+        {"type": "text", "text": user_text},
     ]
 
-    if num_speakers is not None:
-        user_content[1]["text"] += f" There are exactly {num_speakers} speakers."
-
-    if language:
-        user_content[1]["text"] += f" The language is {language}."
-
     messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": prompts.render("diarize_system.j2")},
         {"role": "user", "content": user_content},
     ]
 
