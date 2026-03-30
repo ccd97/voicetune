@@ -173,7 +173,7 @@ def _prompt_speaker(seg_dir: Path, call_id: str) -> str:
 def run_step(name: str, args: list[str], python: str = sys.executable,
              manifest: Manifest | None = None, run_dir: Path | None = None):
     run_dir_args = ["--run-dir", str(run_dir)] if run_dir else []
-    cmd = [python, "-m", f"voicetune.{name}", *run_dir_args, *args]
+    cmd = [python, "-m", f"voicetune.stages.{name}", *run_dir_args, *args]
     log.info(f"{'=' * 60}")
     log.info(f"STEP: {name}")
     log.info(f"  cmd: {' '.join(cmd)}")

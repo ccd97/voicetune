@@ -1,4 +1,4 @@
-"""CLI entry point: python -m voicetune.label"""
+"""CLI entry point: python -m voicetune.stages.label"""
 
 import argparse
 import logging

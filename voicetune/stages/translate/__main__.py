@@ -1,4 +1,4 @@
-"""CLI entry point: python -m voicetune.scrub"""
+"""CLI entry point: python -m voicetune.stages.translate"""
 
 import argparse
 import logging
@@ -18,7 +18,7 @@ def main():
     setup_logging()
 
     parser = argparse.ArgumentParser(
-        description="Scrub sensitive data from diarized transcripts using a local LLM"
+        description="Add English translations to diarized call transcripts"
     )
     parser.add_argument(
         "--run-dir", type=Path, default=Path("./output"),
@@ -30,14 +30,14 @@ def main():
     )
     parser.add_argument(
         "--output-dir", type=Path, default=None,
-        help="Directory for scrubbed output (default: <run-dir>/scrubbed)"
+        help="Directory for translated output (default: <run-dir>/translated)"
     )
     args = parser.parse_args()
 
     if args.input_dir is None:
         args.input_dir = args.run_dir / "diarized"
     if args.output_dir is None:
-        args.output_dir = args.run_dir / "scrubbed"
+        args.output_dir = args.run_dir / "translated"
 
     if not args.input_dir.is_dir():
         log.error(f"Input directory does not exist: {args.input_dir}")

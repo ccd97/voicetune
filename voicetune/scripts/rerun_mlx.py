@@ -40,8 +40,8 @@ def find_matching_calls(substrings: list[str]) -> list[Path]:
 
 
 def main():
-    from voicetune.diarize.mlx_backend import diarize
-    from voicetune.scrub.pipeline import process_file as scrub_file
+    from voicetune.stages.diarize.mlx_backend import diarize
+    from voicetune.stages.scrub.pipeline import process_file as scrub_file
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     SCRUB_DIR.mkdir(parents=True, exist_ok=True)

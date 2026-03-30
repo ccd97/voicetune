@@ -12,11 +12,9 @@ Usage:
 import argparse
 import json
 import logging
-import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from voicetune.correction.pipeline import RejectReason
+from voicetune.stages.correction.pipeline import RejectReason
 
 from dotenv import load_dotenv
 
@@ -46,7 +44,7 @@ def main():
 
     if not args.rejected.exists():
         log.error(f"No rejection manifest found at {args.rejected}")
-        log.error("Run the correction step first: python -m voicetune.correction")
+        log.error("Run the correction step first: python -m voicetune.stages.correction")
         return
 
     with open(args.rejected) as f:
@@ -64,15 +62,15 @@ def main():
     for r in rejections:
         log.info(f"  {r['call_id']}: {', '.join(r['reasons'])} (confidence: {r['confidence']:.2f})")
 
-    from voicetune.scrub.pipeline import process_file as scrub_file
+    from voicetune.stages.scrub.pipeline import process_file as scrub_file
     SCRUB_DIR.mkdir(parents=True, exist_ok=True)
 
     if args.mode == "aws":
-        from voicetune.diarize.aws import diarize
+        from voicetune.stages.diarize.aws import diarize
     elif args.mode == "whisperx":
-        from voicetune.diarize.whisperx_backend import diarize
+        from voicetune.stages.diarize.whisperx_backend import diarize
     else:
-        from voicetune.diarize.mlx_backend import diarize
+        from voicetune.stages.diarize.mlx_backend import diarize
 
     failed = []
     for r in rejections:

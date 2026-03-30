@@ -1,4 +1,4 @@
-"""CLI entry point: python -m voicetune.diarize"""
+"""CLI entry point: python -m voicetune.stages.diarize"""
 
 import argparse
 import logging

@@ -1,4 +1,4 @@
-"""CLI entry point: python -m voicetune.correction"""
+"""CLI entry point: python -m voicetune.stages.correction"""
 
 import argparse
 import json

@@ -1,4 +1,4 @@
-"""CLI entry point: python -m voicetune.preprocess"""
+"""CLI entry point: python -m voicetune.stages.preprocess"""
 
 import argparse
 import logging
