@@ -2,7 +2,10 @@
 
 import argparse
 import logging
+import warnings
 from pathlib import Path
+
+warnings.filterwarnings("ignore", category=UserWarning, module="pyannote")
 
 from dotenv import load_dotenv
 
@@ -20,8 +23,8 @@ def main():
         description="Speaker diarization + transcription (Step 2 & 3)"
     )
     parser.add_argument(
-        "--mode", choices=["aws", "whisperx", "mlx"], required=True,
-        help="Diarization backend: 'aws', 'whisperx', or 'mlx' (Apple Silicon)"
+        "--mode", choices=["aws", "whisperx", "whispermlx", "mlx", "llamacpp"], required=True,
+        help="Diarization backend: 'aws', 'whisperx', 'whispermlx' (WhisperX on Apple Silicon via MLX), 'mlx' (Apple Silicon), or 'llamacpp' (Gemma 4 audio)"
     )
     parser.add_argument(
         "--input-dir", type=Path, default=Path("./output/preprocessed"),
@@ -54,6 +57,10 @@ def main():
         from .aws import diarize
     elif args.mode == "whisperx":
         from .whisperx_backend import diarize
+    elif args.mode == "whispermlx":
+        from .whispermlx_backend import diarize
+    elif args.mode == "llamacpp":
+        from .llamacpp_backend import diarize
     else:
         from .mlx_backend import diarize
 

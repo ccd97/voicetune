@@ -60,7 +60,6 @@ def enroll(segmented_dir: Path, call_id: str, my_speaker_label: str, output_path
     with open(dialogue_path) as f:
         dialogue = json.load(f)
 
-    # Collect audio paths for the user's turns
     my_turns = [t for t in dialogue["turns"] if t["speaker"] == my_speaker_label]
     if not my_turns:
         raise ValueError(f"No turns found for speaker '{my_speaker_label}' in {call_id}")
@@ -77,12 +76,13 @@ def enroll(segmented_dir: Path, call_id: str, my_speaker_label: str, output_path
     log.info(f"Voiceprint saved to {output_path}")
 
 
-def label_call(segmented_dir: Path, call_id: str, voiceprint_path: Path) -> dict:
-    """Label speakers in a segmented call using a reference voiceprint.
+MIN_SIMILARITY = 0.60
+MIN_MARGIN = 0.10
+MIN_USABLE_TURNS = 3
 
-    Compares each speaker's embedding against the voiceprint and assigns
-    'me' to the closest match, 'other' to the rest.
-    """
+
+def analyze_speakers(segmented_dir: Path, call_id: str, voiceprint_path: Path) -> dict:
+    """Compute speaker similarities and quality flags without writing anything."""
     call_dir = segmented_dir / call_id
     dialogue_path = call_dir / "dialogue.json"
 
@@ -91,23 +91,23 @@ def label_call(segmented_dir: Path, call_id: str, voiceprint_path: Path) -> dict
 
     ref_embedding = np.load(str(voiceprint_path))
 
-    # Group turns by speaker and extract embeddings
     speakers = dialogue["speakers"]
     speaker_embeddings = {}
+    speaker_usable_counts = {}
 
     for speaker in speakers:
         speaker_turns = [t for t in dialogue["turns"] if t["speaker"] == speaker]
-        # Use longest turns for embedding
         speaker_turns.sort(key=lambda t: t["duration"], reverse=True)
         audio_paths = [call_dir / t["audio_path"] for t in speaker_turns[:10]]
 
         try:
             speaker_embeddings[speaker] = extract_embedding(audio_paths)
+            speaker_usable_counts[speaker] = len(audio_paths)
         except ValueError:
             log.warning(f"  Could not extract embedding for {speaker} — too little audio")
             speaker_embeddings[speaker] = None
+            speaker_usable_counts[speaker] = 0
 
-    # Compute similarity to reference voiceprint
     similarities = {}
     for speaker, emb in speaker_embeddings.items():
         if emb is not None:
@@ -117,19 +117,60 @@ def label_call(segmented_dir: Path, call_id: str, voiceprint_path: Path) -> dict
         else:
             similarities[speaker] = -1.0
 
-    # Assign 'me' to the most similar speaker
     best_match = max(similarities, key=similarities.get)
-    label_map = {s: ("other" if s != best_match else "me") for s in speakers}
+
+    quality_flags = []
+    sorted_sims = sorted(similarities.values(), reverse=True)
+    best_sim = sorted_sims[0]
+
+    if best_sim < MIN_SIMILARITY:
+        quality_flags.append("low_similarity")
+        log.warning(f"  Low similarity: best match {best_match} scored {best_sim:.3f} (threshold {MIN_SIMILARITY})")
+
+    if len(sorted_sims) >= 2 and sorted_sims[0] - sorted_sims[1] < MIN_MARGIN:
+        quality_flags.append("ambiguous_match")
+        log.warning(f"  Ambiguous match: margin between top two speakers is {sorted_sims[0] - sorted_sims[1]:.3f} (threshold {MIN_MARGIN})")
+
+    for speaker, count in speaker_usable_counts.items():
+        if 0 < count < MIN_USABLE_TURNS:
+            quality_flags.append(f"insufficient_audio:{speaker}")
+            log.warning(f"  Insufficient audio for {speaker}: only {count} usable turn(s)")
+
+    # Sample text per speaker for interactive review
+    speaker_samples = {}
+    for speaker in speakers:
+        turns = [t for t in dialogue["turns"] if t["speaker"] == speaker]
+        speaker_samples[speaker] = [t["text"] for t in turns[:3]]
+
+    return {
+        "call_id": call_id,
+        "dialogue": dialogue,
+        "similarities": similarities,
+        "best_match": best_match,
+        "quality_flags": quality_flags,
+        "speaker_samples": speaker_samples,
+        "needs_review": "low_similarity" in quality_flags or "ambiguous_match" in quality_flags,
+    }
+
+
+def apply_labels(segmented_dir: Path, analysis: dict, me_speaker: str) -> dict:
+    """Apply speaker labels using the given speaker as 'me' and write dialogue.json."""
+    call_id = analysis["call_id"]
+    dialogue = analysis["dialogue"]
+    speakers = dialogue["speakers"]
+
+    label_map = {s: ("me" if s == me_speaker else "other") for s in speakers}
     log.info(f"  Label map: {label_map}")
 
-    # Update dialogue
     for turn in dialogue["turns"]:
         turn["speaker_label"] = label_map[turn["speaker"]]
 
     dialogue["speaker_labels"] = label_map
-    dialogue["speaker_similarities"] = similarities
+    dialogue["speaker_similarities"] = analysis["similarities"]
+    dialogue["label_quality_flags"] = analysis["quality_flags"]
 
-    # Write updated dialogue
+    call_dir = segmented_dir / call_id
+    dialogue_path = call_dir / "dialogue.json"
     with open(dialogue_path, "w") as f:
         json.dump(dialogue, f, indent=2, ensure_ascii=False)
 

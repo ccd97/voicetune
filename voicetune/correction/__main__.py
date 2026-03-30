@@ -1,6 +1,7 @@
 """CLI entry point: python -m voicetune.correction"""
 
 import argparse
+import json
 import logging
 from pathlib import Path
 
@@ -36,18 +37,30 @@ def main():
 
     from .pipeline import process_file
 
+    rejections = []
     for path in translated_files:
         try:
             result = process_file(path, args.output_dir)
-            n_turns = len(result["turns"])
-            speakers = sorted(set(t["speaker"] for t in result["turns"]))
-            names = result.get("speaker_names", {})
-            log.info(
-                f"  {result['call_id']}: {n_turns} turns, "
-                f"speakers: {', '.join(f'{s}({names.get(s, '?')})' for s in speakers)}"
-            )
+            if result and result.get("rejected"):
+                rejections.append(result)
+                continue
+            if result:
+                n_turns = len(result["turns"])
+                speakers = sorted(set(t["speaker"] for t in result["turns"]))
+                names = result.get("speaker_names", {})
+                log.info(
+                    f"  {result['call_id']}: {n_turns} turns, "
+                    f"speakers: {', '.join(f'{s}({names.get(s, '?')})' for s in speakers)}"
+                )
         except Exception:
             log.exception(f"Failed to process {path}")
+
+    if rejections:
+        log.info(f"Rejected {len(rejections)}/{len(translated_files)} conversation(s)")
+        rejected_path = args.output_dir / "rejected.json"
+        with open(rejected_path, "w") as f:
+            json.dump(rejections, f, indent=2)
+        log.info(f"Rejection manifest: {rejected_path}")
 
 
 if __name__ == "__main__":

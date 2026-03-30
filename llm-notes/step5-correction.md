@@ -1,4 +1,4 @@
-# Step 4: Correction (Claude-based Speaker Correction)
+# Step 5: Correction (Claude-based Speaker Correction)
 
 ## Purpose
 
@@ -71,10 +71,35 @@ Same as translate step: `ANTHROPIC_BEDROCK_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, `C
 
 `httpx`, `python-dotenv`
 
+## Quality Gate
+
+Claude returns a confidence score (0.0–1.0) and an `issues` array alongside each batch. The response format is: `{"confidence": 0.85, "issues": [], "assignments": [...]}`.
+
+### LLM-reported issues (`RejectReason` enum)
+
+| Value | Meaning |
+|-------|---------|
+| `improper_diarization` | Speaker boundaries clearly wrong (mid-sentence splits, misattributed overlap) |
+| `incorrect_speaker_assignment` | Speakers systematically swapped or confused throughout |
+| `incorrect_speaker_count` | Speaker count doesn't match reality (one person split, or two merged) |
+| `garbled_transcript` | Mostly unintelligible ASR output |
+| `nonsensical_conversation` | No coherent conversation flow even after correction |
+| `language_mismatch` | Transcript language doesn't match actual spoken language |
+
+### Deterministic checks (not in the enum)
+
+- Confidence < 0.60 (min across batches)
+- Fewer than 4 turns
+- Fewer than 2 speakers (mono-speaker)
+- More than 4 speakers
+
+A conversation is rejected if it has any LLM-reported issues, fails confidence, or fails any deterministic check. Rejected calls produce no `_corrected.json`; the CLI writes a `rejected.json` manifest with call IDs, reasons, confidence, and counts. The re-run script (`scripts/rerun_mlx_rejected.py`) can filter by `--reasons` using the enum values.
+
 ## Key Implementation Details
 
 - Response parsing finds JSON array boundaries (`[` to `]`) in Claude's response
 - Warns if number of assignments doesn't match number of turns (uses original labels for missing)
-- Tracks and logs every speaker change with reasoning
+- Per-turn changes logged at DEBUG level; summary at INFO
 - Output format is compatible with both the diarized and translated formats (has turns[] with speaker, start, end, text fields)
+- **Batching:** Transcripts are processed in batches of 80 turns (BATCH_SIZE) to stay within the `max_tokens=8192` response limit. Each batch after the first includes the last 10 corrected turns (CONTEXT_OVERLAP) as read-only context so Claude maintains speaker consistency across batch boundaries. Short calls (<= 80 turns) go through in a single request.
 

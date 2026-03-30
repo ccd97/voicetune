@@ -1,4 +1,4 @@
-"""One-click pipeline: preprocess → diarize → translate → correction → segment → label → pairformat → export → finetune."""
+"""One-click pipeline: preprocess → diarize → scrub → translate → correction → segment → label → pairformat → export → finetune."""
 
 import argparse
 import json
@@ -14,13 +14,14 @@ log = logging.getLogger(__name__)
 STEPS = [
     "preprocess",     # 1
     "diarize",        # 2
-    "translate",      # 3
-    "correction",     # 4
-    "segment",        # 5
-    "label",          # 6
-    "pairformat",     # 7
-    "export",         # 8
-    "finetune",       # 9
+    "scrub",          # 3
+    "translate",      # 4
+    "correction",     # 5
+    "segment",        # 6
+    "label",          # 7
+    "pairformat",     # 8
+    "export",         # 9
+    "finetune",       # 10
 ]
 
 
@@ -142,7 +143,7 @@ def main():
         description="Run the full audio processing pipeline"
     )
     parser.add_argument(
-        "--mode", choices=["aws", "whisperx", "mlx"], default="mlx",
+        "--mode", choices=["aws", "whisperx", "whispermlx", "mlx", "llamacpp"], default="mlx",
         help="Diarization backend (default: mlx)"
     )
     parser.add_argument(
@@ -163,15 +164,15 @@ def main():
         help="Python interpreter to use (default: auto-detect based on mode)"
     )
     parser.add_argument(
-        "--fish-speech-dir", type=Path, default=None,
-        help="Path to cloned fish-speech repo (required for finetune step)"
+        "--finetune-test", action="store_true",
+        help="Finetune in test mode (spot A100, 1 step)"
     )
     args = parser.parse_args()
 
     # Pick the right python for the mode
     if args.python:
         python = args.python
-    elif args.mode in ("whisperx", "mlx"):
+    elif args.mode in ("whisperx", "whispermlx", "mlx"):
         venv = Path(".venv-whisperx/bin/python")
         if venv.exists():
             python = str(venv)
@@ -197,11 +198,9 @@ def main():
 
     log.info(f"Steps to run: {', '.join(f'{STEPS.index(s)+1}.{s}' for s in steps_to_run)}")
 
-    # 1. Preprocess
     if "preprocess" in steps_to_run:
         timings["preprocess"] = run_step("preprocess", [], python=api_python)
 
-    # 2. Diarize
     if "diarize" in steps_to_run:
         diarize_args = ["--mode", args.mode]
         if args.num_speakers:
@@ -210,11 +209,16 @@ def main():
             diarize_args += ["--language", args.language]
         timings["diarize"] = run_step("diarize", diarize_args, python=python)
 
-    # 3. Translate
-    if "translate" in steps_to_run:
-        timings["translate"] = run_step("translate", [], python=api_python)
+    if "scrub" in steps_to_run:
+        timings["scrub"] = run_step("scrub", [], python=api_python)
 
-    # 4. Correction
+    if "translate" in steps_to_run:
+        translate_args = []
+        scrubbed_dir = Path("output/scrubbed")
+        if scrubbed_dir.exists() and any(scrubbed_dir.glob("*_diarized.json")):
+            translate_args = ["--input-dir", str(scrubbed_dir)]
+        timings["translate"] = run_step("translate", translate_args, python=api_python)
+
     if "correction" in steps_to_run:
         timings["correction"] = run_step("correction", [], python=api_python)
         # Copy corrected output over diarized so segment picks it up
@@ -224,11 +228,9 @@ def main():
             shutil.copy2(f, target)
             log.info(f"  Copied {f.name} -> {target.name}")
 
-    # 5. Segment
     if "segment" in steps_to_run:
         timings["segment"] = run_step("segment", [], python=api_python)
 
-    # 6-8. Label, Pairformat, Export — prompt user for speaker selection
     if "label" in steps_to_run:
         seg_dir = Path("output/segmented")
         call_ids = sorted(
@@ -260,15 +262,12 @@ def main():
     if "export" in steps_to_run:
         timings["export"] = run_step("export", [], python=api_python)
 
-    # 9. Finetune
     if "finetune" in steps_to_run:
-        if not args.fish_speech_dir:
-            log.error("--fish-speech-dir is required for the finetune step")
-            sys.exit(1)
-        finetune_args = ["--fish-speech-dir", str(args.fish_speech_dir)]
+        finetune_args = []
+        if args.finetune_test:
+            finetune_args.append("--test")
         timings["finetune"] = run_step("finetune", finetune_args, python=api_python)
 
-    # Summary
     log.info(f"{'=' * 60}")
     log.info("PIPELINE COMPLETE")
     log.info(f"{'=' * 60}")

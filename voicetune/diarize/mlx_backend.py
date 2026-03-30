@@ -29,7 +29,6 @@ def diarize(audio_path: Path, output_dir: Path, num_speakers: int | None = None,
 
     hf_token = os.environ["HF_TOKEN"]
 
-    # 1. Transcribe with mlx-whisper (Apple Silicon GPU)
     model_repo = "mlx-community/whisper-large-v3-turbo"
     log.info(f"Transcribing with mlx-whisper ({model_repo})...")
 
@@ -46,7 +45,7 @@ def diarize(audio_path: Path, output_dir: Path, num_speakers: int | None = None,
     detected_lang = result.get("language", "en")
     log.info(f"Language: {detected_lang}, {len(result['segments'])} segments")
 
-    # 2. Diarize with pyannote (pass waveform directly to avoid torchcodec issues)
+    # Pass waveform directly to avoid torchcodec issues with pyannote
     import soundfile as sf
 
     log.info(f"Running speaker diarization (speakers: {'auto-detect' if num_speakers is None else num_speakers})...")
@@ -55,7 +54,6 @@ def diarize(audio_path: Path, output_dir: Path, num_speakers: int | None = None,
         token=hf_token,
     )
 
-    # Use MPS (Metal GPU) on Apple Silicon if available, fall back to CPU
     if torch.backends.mps.is_available():
         log.info("Using MPS (Metal) for diarization")
         diarize_pipeline.to(torch.device("mps"))
@@ -79,12 +77,11 @@ def diarize(audio_path: Path, output_dir: Path, num_speakers: int | None = None,
         **diarize_kwargs,
     )
 
-    # 3. Build a speaker timeline from pyannote output
+    annotation = getattr(diarization, "speaker_diarization", diarization)
     speaker_timeline = []
-    for turn, _, speaker in diarization.itertracks(yield_label=True):
+    for turn, _, speaker in annotation.itertracks(yield_label=True):
         speaker_timeline.append((turn.start, turn.end, speaker))
 
-    # 4. Assign speakers to words using pyannote segments
     for segment in result["segments"]:
         if "words" not in segment:
             segment["speaker"] = _find_speaker(
@@ -99,7 +96,6 @@ def diarize(audio_path: Path, output_dir: Path, num_speakers: int | None = None,
         speakers = [w["speaker"] for w in segment["words"] if w.get("speaker")]
         segment["speaker"] = max(set(speakers), key=speakers.count) if speakers else "UNKNOWN"
 
-    # 5. Convert to dialogue format
     call_id = get_call_id(audio_path)
     turns = merge_segments_to_turns(result["segments"])
 

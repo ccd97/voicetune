@@ -6,12 +6,44 @@ from pathlib import Path
 
 from voicetune.common import setup_logging
 
-from .pipeline import enroll, label_call
+from .pipeline import analyze_speakers, apply_labels, enroll
 
 setup_logging()
 log = logging.getLogger(__name__)
 
 VOICEPRINT_PATH = Path("./output/voiceprint.npy")
+
+
+def prompt_speaker_selection(call_id: str, analysis: dict, auto_skip: bool) -> str | None:
+    """Prompt user to pick 'me' speaker, or skip. Returns speaker label or None."""
+    flags = ", ".join(analysis["quality_flags"])
+    log.warning(f"  Low-confidence match for {call_id} [{flags}]")
+
+    if auto_skip:
+        log.info(f"  Auto-skipping {call_id}")
+        return None
+
+    print(f"\n--- {call_id}: manual review needed [{flags}] ---")
+    speakers = sorted(analysis["similarities"], key=analysis["similarities"].get, reverse=True)
+    for i, spk in enumerate(speakers):
+        sim = analysis["similarities"][spk]
+        samples = analysis["speaker_samples"].get(spk, [])
+        print(f"  [{i + 1}] {spk} (similarity: {sim:.3f})")
+        for line in samples:
+            print(f"      \"{line}\"")
+
+    print(f"  [s] Skip this call")
+
+    while True:
+        choice = input("Select speaker for 'me': ").strip().lower()
+        if choice == "s":
+            log.info(f"  Skipping {call_id}")
+            return None
+        if choice.isdigit() and 1 <= int(choice) <= len(speakers):
+            selected = speakers[int(choice) - 1]
+            log.info(f"  User selected {selected} as 'me'")
+            return selected
+        print(f"  Invalid choice. Enter 1-{len(speakers)} or 's' to skip.")
 
 
 def main():
@@ -53,6 +85,10 @@ def main():
         "--call-id", type=str, default=None,
         help="Label a specific call (default: label all calls)"
     )
+    label_parser.add_argument(
+        "--auto-skip", action="store_true",
+        help="Automatically skip low-confidence matches instead of prompting"
+    )
 
     args = parser.parse_args()
 
@@ -77,11 +113,22 @@ def main():
             return
 
         log.info(f"Labeling {len(call_ids)} call(s)")
+        skipped = 0
         for call_id in call_ids:
             log.info(f"Processing {call_id}")
-            label_call(args.segmented_dir, call_id, args.voiceprint)
+            analysis = analyze_speakers(args.segmented_dir, call_id, args.voiceprint)
 
-        log.info("Done")
+            if analysis["needs_review"]:
+                me_speaker = prompt_speaker_selection(call_id, analysis, args.auto_skip)
+                if me_speaker is None:
+                    skipped += 1
+                    continue
+            else:
+                me_speaker = analysis["best_match"]
+
+            apply_labels(args.segmented_dir, analysis, me_speaker)
+
+        log.info(f"Done ({skipped} skipped)" if skipped else "Done")
 
 
 if __name__ == "__main__":

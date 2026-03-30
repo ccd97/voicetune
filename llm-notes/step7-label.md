@@ -1,4 +1,4 @@
-# Step 6: Label (Speaker Identification)
+# Step 7: Label (Speaker Identification)
 
 ## Purpose
 Label speakers as "me" vs "other" using a voiceprint embedding. Two-phase process: first enroll (create voiceprint from a reference call), then label all calls.
@@ -60,6 +60,22 @@ Label speakers as "me" vs "other" using a voiceprint embedding. Two-phase proces
   ]
 }
 ```
+
+## Quality Checks & Interactive Review
+
+After computing similarities, the labeling step flags potential issues:
+
+| Flag | Condition | Meaning |
+|------|-----------|---------|
+| `low_similarity` | Best match < 0.60 | Voiceprint may not match any speaker |
+| `ambiguous_match` | Top-two margin < 0.10 | Assignment isn't confident |
+| `insufficient_audio:{spk}` | Speaker has 1-2 usable turns | Embedding may be unreliable |
+
+When `low_similarity` or `ambiguous_match` is flagged, the CLI pauses and prompts the user to manually select which speaker is "me" — showing each speaker's similarity score and sample text. The user can also skip the call entirely (no dialogue.json update). Use `--auto-skip` to skip all low-confidence calls without prompting.
+
+Pipeline is split into two functions: `analyze_speakers()` (compute similarities + flags, no side effects) and `apply_labels()` (write dialogue.json with the chosen speaker). The CLI orchestrates the interactive logic between them.
+
+Thresholds are module-level constants (`MIN_SIMILARITY`, `MIN_MARGIN`, `MIN_USABLE_TURNS`).
 
 ## Key Implementation Details
 - Uses resemblyzer `VoiceEncoder` (singleton, loaded once)

@@ -1,289 +1,247 @@
-"""Fish Speech S2 Pro LoRA fine-tuning pipeline.
+"""GCP-based Fish Speech S2 Pro LoRA fine-tuning.
 
-Orchestrates the Fish Speech training pipeline:
-1. Download S2 Pro model weights (if not present)
-2. Extract semantic tokens using S2 Pro codec
-3. Pack training data into protobuf format
-4. Run LoRA fine-tuning
-5. Merge LoRA weights into base model
-
-All commands run inside the fish-speech repo directory.
+Uploads training data to GCS, launches an A100 VM that runs the full
+Fish Speech pipeline (VQ extraction -> dataset build -> LoRA train -> merge),
+monitors progress via guest attributes, and downloads the finetuned model.
 """
 
-import json
 import logging
-import re
-import subprocess
-import sys
+import os
 import time
 from pathlib import Path
 
+from google.api_core.exceptions import GoogleAPICallError, NotFound
+from google.cloud import compute_v1, storage
+
 log = logging.getLogger(__name__)
 
-MODEL_REPO = "fishaudio/s2-pro"
-CODEC_FILENAME = "codec.pth"
+GCP_PROJECT = os.environ["GCP_PROJECT"]
+BUCKET_NAME = "voicetune-finetune-cdcunha"
+BUCKET_URI = f"gs://{BUCKET_NAME}"
+INSTANCE_BASE = "voicetune-finetune"
+MACHINE_TYPE = "a2-highgpu-1g"
+ACCELERATOR = "nvidia-tesla-a100"
+IMAGE_FAMILY = "pytorch-2-9-cu129-ubuntu-2404-nvidia-580"
+IMAGE_PROJECT = "deeplearning-platform-release"
+STARTUP_SCRIPT = Path(__file__).parent / "startup_gcp.sh"
+TRAIN_SCRIPT = Path(__file__).parent / "train_gcp.py"
+
+ZONES = [
+    "us-central1-a", "us-central1-b", "us-central1-c", "us-central1-f",
+    "us-east1-b", "us-east1-c",
+    "us-west1-a", "us-west1-b",
+    "us-west4-a", "us-west4-b",
+    "europe-west4-a", "europe-west4-b", "europe-west4-c",
+    "asia-southeast1-b", "asia-southeast1-c",
+]
 
 
-def _run_cmd(cmd: list[str], cwd: Path, description: str) -> None:
-    """Run a subprocess command with logging and error handling."""
-    log.info(f"  Running: {' '.join(cmd)}")
-    log.info(f"  cwd: {cwd}")
-    result = subprocess.run(cmd, cwd=str(cwd))
-    if result.returncode != 0:
-        raise RuntimeError(f"{description} failed with exit code {result.returncode}")
+def validate_data(data_dir: Path) -> tuple[int, int]:
+    me_dir = data_dir / "me"
+    if not me_dir.is_dir():
+        raise FileNotFoundError(f"No training data directory: {me_dir}")
+    wavs = list(me_dir.glob("*.wav"))
+    labs = list(me_dir.glob("*.lab"))
+    if not wavs or not labs:
+        raise FileNotFoundError(f"No wav+lab pairs in {me_dir}. Run the export step first.")
+    return len(wavs), len(labs)
 
 
-def prepare_data_link(fish_speech_dir: Path, data_dir: Path) -> dict:
-    """Symlink or verify the exported data is accessible from fish-speech/data/."""
-    target = fish_speech_dir / "data"
-    source = data_dir.resolve()
+def ensure_bucket(bucket: storage.Bucket) -> None:
+    if bucket.exists():
+        return
+    log.info(f"Creating bucket {BUCKET_NAME}...")
+    bucket.client.create_bucket(bucket, location="us")
 
-    if target.is_symlink():
-        existing = target.resolve()
-        if existing == source:
-            log.info(f"  Data symlink already correct: {target} -> {source}")
-            return {"status": "exists", "path": str(target)}
-        else:
-            log.warning(f"  Removing stale symlink: {target} -> {existing}")
-            target.unlink()
-    elif target.exists():
-        raise RuntimeError(
-            f"{target} exists and is not a symlink. "
-            f"Please remove or rename it, then retry."
+
+def upload_data(bucket: storage.Bucket, data_dir: Path) -> None:
+    files = sorted(f for f in data_dir.rglob("*") if f.is_file())
+    log.info(f"Uploading {len(files)} files to gs://{BUCKET_NAME}/data/...")
+    for f in files:
+        blob_name = f"data/{f.relative_to(data_dir)}"
+        bucket.blob(blob_name).upload_from_filename(str(f))
+
+
+def upload_train_script(bucket: storage.Bucket) -> None:
+    log.info("Uploading training script...")
+    bucket.blob("train_gcp.py").upload_from_filename(str(TRAIN_SCRIPT))
+
+
+def cleanup_existing(compute: compute_v1.InstancesClient, instance: str) -> None:
+    for zone in ZONES:
+        try:
+            compute.get(project=GCP_PROJECT, zone=zone, instance=instance)
+        except NotFound:
+            continue
+        log.info(f"Deleting existing instance {instance} in {zone}...")
+        compute.delete(project=GCP_PROJECT, zone=zone, instance=instance).result()
+
+
+def _build_instance(
+    name: str, zone: str, max_steps: int, spot: bool,
+) -> compute_v1.Instance:
+    startup_content = STARTUP_SCRIPT.read_text()
+
+    scheduling = compute_v1.Scheduling(on_host_maintenance="TERMINATE")
+    if spot:
+        scheduling.provisioning_model = "SPOT"
+        scheduling.instance_termination_action = "DELETE"
+
+    return compute_v1.Instance(
+        name=name,
+        machine_type=f"zones/{zone}/machineTypes/{MACHINE_TYPE}",
+        disks=[
+            compute_v1.AttachedDisk(
+                auto_delete=True,
+                boot=True,
+                initialize_params=compute_v1.AttachedDiskInitializeParams(
+                    source_image=f"projects/{IMAGE_PROJECT}/global/images/family/{IMAGE_FAMILY}",
+                    disk_size_gb=100,
+                ),
+            ),
+        ],
+        network_interfaces=[
+            compute_v1.NetworkInterface(
+                access_configs=[compute_v1.AccessConfig(name="External NAT")],
+            ),
+        ],
+        guest_accelerators=[
+            compute_v1.AcceleratorConfig(
+                accelerator_type=f"zones/{zone}/acceleratorTypes/{ACCELERATOR}",
+                accelerator_count=1,
+            ),
+        ],
+        scheduling=scheduling,
+        metadata=compute_v1.Metadata(items=[
+            compute_v1.Items(key="MAX_STEPS", value=str(max_steps)),
+            compute_v1.Items(key="BUCKET", value=BUCKET_URI),
+            compute_v1.Items(key="enable-guest-attributes", value="TRUE"),
+            compute_v1.Items(key="startup-script", value=startup_content),
+        ]),
+        service_accounts=[
+            compute_v1.ServiceAccount(scopes=[
+                "https://www.googleapis.com/auth/devstorage.full_control",
+                "https://www.googleapis.com/auth/compute",
+            ]),
+        ],
+    )
+
+
+def create_instance(
+    compute: compute_v1.InstancesClient,
+    instance: str,
+    max_steps: int,
+    spot: bool,
+) -> str:
+    for zone in ZONES:
+        log.info(f"Trying zone {zone}...")
+        inst = _build_instance(instance, zone, max_steps, spot)
+        try:
+            compute.insert(
+                project=GCP_PROJECT, zone=zone, instance_resource=inst,
+            ).result()
+            return zone
+        except GoogleAPICallError as e:
+            log.info(f"  Zone {zone} unavailable: {e.message}")
+
+    raise RuntimeError(
+        f"No zone had {ACCELERATOR} capacity across {len(ZONES)} zones. Try again later."
+    )
+
+
+def poll_status(
+    compute: compute_v1.InstancesClient, instance: str, zone: str,
+) -> str:
+    try:
+        result = compute.get_guest_attributes(
+            project=GCP_PROJECT, zone=zone, instance=instance,
+            query_path="voicetune/status",
         )
-
-    target.symlink_to(source)
-    log.info(f"  Created symlink: {target} -> {source}")
-    return {"status": "created", "path": str(target)}
-
-
-def download_model(fish_speech_dir: Path, skip: bool = False) -> dict:
-    """Download S2 Pro model weights from HuggingFace."""
-    checkpoint_dir = fish_speech_dir / "checkpoints" / "s2-pro"
-    codec_path = checkpoint_dir / CODEC_FILENAME
-
-    if skip:
-        log.info("  Skipping model download (--skip-download)")
-        return {"status": "skipped", "path": str(checkpoint_dir)}
-
-    if codec_path.exists():
-        log.info(f"  Model already downloaded: {codec_path}")
-        return {"status": "exists", "path": str(checkpoint_dir)}
-
-    _run_cmd(
-        ["huggingface-cli", "download", MODEL_REPO, "--local-dir", str(checkpoint_dir)],
-        cwd=fish_speech_dir,
-        description="Model download",
-    )
-    return {"status": "downloaded", "path": str(checkpoint_dir)}
+        if result.query_value and result.query_value.items:
+            return result.query_value.items[0].value
+        return "PENDING"
+    except NotFound:
+        try:
+            compute.get(project=GCP_PROJECT, zone=zone, instance=instance)
+            return "PENDING"
+        except NotFound:
+            return "VM_GONE"
+    except Exception:
+        return "PENDING"
 
 
-def extract_semantic_tokens(
-    fish_speech_dir: Path, num_workers: int, batch_size: int
-) -> dict:
-    """Extract semantic tokens using S2 Pro codec (VQ extraction)."""
-    data_me = fish_speech_dir / "data" / "me"
-    wav_count = len(list(data_me.glob("*.wav")))
-    npy_count = len(list(data_me.glob("*.npy")))
-
-    if npy_count >= wav_count and wav_count > 0:
-        log.info(f"  VQ tokens already extracted ({npy_count} .npy for {wav_count} .wav)")
-        return {"status": "skipped", "wav_count": wav_count, "npy_count": npy_count}
-
-    _run_cmd(
-        [
-            sys.executable, "tools/vqgan/extract_vq.py", "data",
-            "--num-workers", str(num_workers),
-            "--batch-size", str(batch_size),
-            "--config-name", "modded_dac_vq",
-            "--checkpoint-path", "checkpoints/s2-pro/codec.pth",
-        ],
-        cwd=fish_speech_dir,
-        description="VQ extraction",
-    )
-
-    npy_count = len(list(data_me.glob("*.npy")))
-    return {"status": "completed", "wav_count": wav_count, "npy_count": npy_count}
+def delete_instance(
+    compute: compute_v1.InstancesClient, instance: str, zone: str,
+) -> None:
+    try:
+        compute.delete(project=GCP_PROJECT, zone=zone, instance=instance).result()
+        log.info(f"Deleted instance {instance} in {zone}")
+    except NotFound:
+        pass
 
 
-def build_dataset(fish_speech_dir: Path, dataset_workers: int) -> dict:
-    """Pack wav+lab pairs into protobuf format for training."""
-    protos_dir = fish_speech_dir / "data" / "protos"
-
-    if protos_dir.exists() and any(protos_dir.iterdir()):
-        count = len(list(protos_dir.iterdir()))
-        log.info(f"  Protobuf dataset already exists ({count} files in {protos_dir})")
-        return {"status": "skipped", "protos_count": count}
-
-    _run_cmd(
-        [
-            sys.executable, "tools/llama/build_dataset.py",
-            "--input", "data",
-            "--output", "data/protos",
-            "--text-extension", ".lab",
-            "--num-workers", str(dataset_workers),
-        ],
-        cwd=fish_speech_dir,
-        description="Dataset build",
-    )
-
-    count = len(list(protos_dir.iterdir())) if protos_dir.exists() else 0
-    return {"status": "completed", "protos_count": count}
-
-
-def find_latest_checkpoint(results_dir: Path) -> Path | None:
-    """Find the latest checkpoint file in training results."""
-    ckpts = sorted(
-        results_dir.glob("step_*.ckpt"),
-        key=lambda p: int(re.search(r"step_(\d+)", p.stem).group(1)),
-    )
-    return ckpts[-1] if ckpts else None
-
-
-def train_lora(
-    fish_speech_dir: Path,
-    project: str,
-    lora_rank: int,
-    lora_alpha: int,
-    max_steps: int | None,
-) -> dict:
-    """Run LoRA fine-tuning on S2 Pro."""
-    lora_config = f"r_{lora_rank}_alpha_{lora_alpha}"
-
-    cmd = [
-        sys.executable, "fish_speech/train.py",
-        "--config-name", "text2semantic_finetune",
-        f"project={project}",
-        f"model.pretrained_checkpoint=checkpoints/s2-pro",
-        f"+lora@model.model.lora_config={lora_config}",
-    ]
-    if max_steps is not None:
-        cmd.append(f"trainer.max_steps={max_steps}")
-
-    _run_cmd(cmd, cwd=fish_speech_dir, description="LoRA training")
-
-    # Find the checkpoint produced
-    results_dir = fish_speech_dir / "results" / project / "checkpoints"
-    checkpoint = find_latest_checkpoint(results_dir)
-
-    return {
-        "status": "completed",
-        "lora_config": lora_config,
-        "checkpoint": str(checkpoint) if checkpoint else None,
-    }
-
-
-def merge_lora(
-    fish_speech_dir: Path,
-    project: str,
-    lora_rank: int,
-    lora_alpha: int,
-    checkpoint_step: int | None,
-    skip: bool = False,
-) -> dict:
-    """Merge LoRA weights back into the base model."""
-    if skip:
-        log.info("  Skipping LoRA merge (--skip-merge)")
-        return {"status": "skipped"}
-
-    lora_config = f"r_{lora_rank}_alpha_{lora_alpha}"
-    results_dir = fish_speech_dir / "results" / project / "checkpoints"
-
-    if checkpoint_step is not None:
-        ckpt = results_dir / f"step_{checkpoint_step:05d}.ckpt"
-        if not ckpt.exists():
-            # Try without zero-padding
-            ckpt = results_dir / f"step_{checkpoint_step}.ckpt"
-        if not ckpt.exists():
-            raise FileNotFoundError(f"Checkpoint not found: step_{checkpoint_step} in {results_dir}")
-    else:
-        ckpt = find_latest_checkpoint(results_dir)
-        if ckpt is None:
-            raise FileNotFoundError(f"No checkpoints found in {results_dir}")
-
-    log.info(f"  Using checkpoint: {ckpt.name}")
-
-    output_dir = fish_speech_dir / "checkpoints" / "s2-pro-finetuned"
-
-    _run_cmd(
-        [
-            sys.executable, "tools/llama/merge_lora.py",
-            "--lora-config", lora_config,
-            "--base-weight", "checkpoints/s2-pro",
-            "--lora-weight", str(ckpt),
-            "--output", str(output_dir),
-        ],
-        cwd=fish_speech_dir,
-        description="LoRA merge",
-    )
-
-    return {
-        "status": "completed",
-        "checkpoint": str(ckpt),
-        "output": str(output_dir),
-    }
+def download_model(bucket: storage.Bucket, output_dir: Path) -> Path:
+    model_dir = output_dir / "s2-pro-finetuned"
+    model_dir.mkdir(parents=True, exist_ok=True)
+    log.info(f"Downloading finetuned model to {model_dir}...")
+    for blob in bucket.client.list_blobs(bucket, prefix="model/"):
+        if blob.name.endswith("/"):
+            continue
+        rel = blob.name.removeprefix("model/")
+        local_path = model_dir / rel
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        blob.download_to_filename(str(local_path))
+    return model_dir
 
 
 def run_finetune(
-    fish_speech_dir: Path,
     data_dir: Path,
-    project: str,
-    lora_rank: int,
-    lora_alpha: int,
-    batch_size: int,
-    num_workers: int,
-    dataset_workers: int,
-    max_steps: int | None,
-    skip_download: bool,
-    skip_merge: bool,
-    checkpoint_step: int | None,
+    max_steps: int,
+    test: bool,
     output_dir: Path,
 ) -> dict:
-    """Run the complete fine-tuning pipeline."""
-    timings = {}
-    results = {}
+    instance = f"{INSTANCE_BASE}-test" if test else INSTANCE_BASE
+    bucket = storage.Client(project=GCP_PROJECT).bucket(BUCKET_NAME)
+    compute = compute_v1.InstancesClient()
 
-    steps = [
-        ("data_link", lambda: prepare_data_link(fish_speech_dir, data_dir)),
-        ("download", lambda: download_model(fish_speech_dir, skip=skip_download)),
-        ("extract_vq", lambda: extract_semantic_tokens(fish_speech_dir, num_workers, batch_size)),
-        ("build_dataset", lambda: build_dataset(fish_speech_dir, dataset_workers)),
-        ("train", lambda: train_lora(fish_speech_dir, project, lora_rank, lora_alpha, max_steps)),
-        ("merge", lambda: merge_lora(fish_speech_dir, project, lora_rank, lora_alpha, checkpoint_step, skip=skip_merge)),
-    ]
+    if test:
+        max_steps = 1
+        log.info("=== TEST MODE: A100 SPOT, 1 step ===")
 
-    for name, fn in steps:
-        log.info(f"{'=' * 50}")
-        log.info(f"FINETUNE SUB-STEP: {name}")
-        log.info(f"{'=' * 50}")
-        t0 = time.time()
-        results[name] = fn()
-        elapsed = time.time() - t0
-        timings[name] = round(elapsed, 1)
-        log.info(f"  {name} completed in {elapsed:.1f}s — {results[name].get('status', 'done')}")
+    log.info(f"GCP finetune — project: {GCP_PROJECT}, machine: {MACHINE_TYPE} ({ACCELERATOR}), steps: {max_steps}")
 
-    total = sum(timings.values())
+    wav_count, lab_count = validate_data(data_dir)
+    log.info(f"Training data: {wav_count} wav, {lab_count} lab files")
 
-    summary = {
-        "project": project,
-        "fish_speech_dir": str(fish_speech_dir),
-        "lora_config": f"r_{lora_rank}_alpha_{lora_alpha}",
-        "steps": {name: {**results[name], "elapsed": timings[name]} for name in timings},
-        "total_elapsed": round(total, 1),
-        "finetuned_model": results.get("merge", {}).get("output"),
-    }
+    ensure_bucket(bucket)
+    upload_data(bucket, data_dir)
+    upload_train_script(bucket)
+    cleanup_existing(compute, instance)
 
-    output_dir.mkdir(parents=True, exist_ok=True)
-    summary_path = output_dir / "finetune_summary.json"
-    with open(summary_path, "w") as f:
-        json.dump(summary, f, indent=2)
+    zone = create_instance(compute, instance, max_steps, spot=test)
+    log.info(f"Instance created in {zone}. Monitoring status...")
+    log.info(f"  Serial log: gcloud compute instances get-serial-port-output {instance} --zone={zone} --project={GCP_PROJECT}")
 
-    log.info(f"{'=' * 50}")
-    log.info("FINETUNE COMPLETE")
-    log.info(f"{'=' * 50}")
-    for name, elapsed in timings.items():
-        log.info(f"  {name:20s} {elapsed:8.1f}s")
-    log.info(f"  {'TOTAL':20s} {total:8.1f}s")
-    log.info(f"Summary: {summary_path}")
+    prev_status = ""
+    while True:
+        status = poll_status(compute, instance, zone)
+        if status != prev_status:
+            log.info(f"Status: {status}")
+            prev_status = status
 
-    return summary
+        if status == "COMPLETE":
+            log.info("Training complete!")
+            model_dir = download_model(bucket, output_dir)
+            delete_instance(compute, instance, zone)
+            return {"status": "complete", "model": str(model_dir)}
+
+        if status.startswith("FAILED"):
+            raise RuntimeError(f"Training failed: {status}")
+
+        if status == "VM_GONE":
+            raise RuntimeError(
+                "VM was deleted unexpectedly (spot preemption?). "
+                "Check GCS for partial results or retry."
+            )
+
+        time.sleep(30)

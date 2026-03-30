@@ -1,0 +1,103 @@
+"""Re-run diarization for calls rejected by the correction step.
+
+Reads output/diarized/rejected.json (written by correction step) and
+re-runs diarization with the chosen backend. Optionally force a language.
+
+Usage:
+  python scripts/rerun_rejected.py --mode mlx
+  python scripts/rerun_rejected.py --mode mlx --reasons language_mismatch --language mr
+  python scripts/rerun_rejected.py --mode aws --reasons garbled_transcript
+"""
+
+import argparse
+import json
+import logging
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from voicetune.correction.pipeline import RejectReason
+
+from dotenv import load_dotenv
+
+load_dotenv()
+logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+log = logging.getLogger(__name__)
+
+INPUT_DIR = Path("./output/preprocessed")
+OUTPUT_DIR = Path("./output/diarized")
+SCRUB_DIR = Path("./output/scrubbed")
+REJECTED_PATH = OUTPUT_DIR / "rejected.json"
+
+BACKENDS = ["aws", "whisperx", "mlx"]
+
+
+def main():
+    valid_reasons = [r.value for r in RejectReason]
+
+    parser = argparse.ArgumentParser(description="Re-run diarization for correction-rejected calls")
+    parser.add_argument("--mode", choices=BACKENDS, required=True, help="Diarization backend")
+    parser.add_argument("--language", type=str, default=None, help="Force language (e.g. 'mr', 'hi')")
+    parser.add_argument("--num-speakers", type=int, default=None, help="Expected number of speakers")
+    parser.add_argument("--reasons", nargs="+", choices=valid_reasons, default=None,
+                        help="Only re-run calls matching these reasons")
+    parser.add_argument("--rejected", type=Path, default=REJECTED_PATH, help="Path to rejected.json")
+    args = parser.parse_args()
+
+    if not args.rejected.exists():
+        log.error(f"No rejection manifest found at {args.rejected}")
+        log.error("Run the correction step first: python -m voicetune.correction")
+        return
+
+    with open(args.rejected) as f:
+        rejections = json.load(f)
+
+    if args.reasons:
+        filter_set = set(args.reasons)
+        rejections = [r for r in rejections if filter_set & set(r["reasons"])]
+
+    if not rejections:
+        log.info("No rejected calls to re-run")
+        return
+
+    log.info(f"Found {len(rejections)} rejected call(s), backend: {args.mode}")
+    for r in rejections:
+        log.info(f"  {r['call_id']}: {', '.join(r['reasons'])} (confidence: {r['confidence']:.2f})")
+
+    from voicetune.scrub.pipeline import process_file as scrub_file
+    SCRUB_DIR.mkdir(parents=True, exist_ok=True)
+
+    if args.mode == "aws":
+        from voicetune.diarize.aws import diarize
+    elif args.mode == "whisperx":
+        from voicetune.diarize.whisperx_backend import diarize
+    else:
+        from voicetune.diarize.mlx_backend import diarize
+
+    failed = []
+    for r in rejections:
+        call_id = r["call_id"]
+        wav = INPUT_DIR / call_id / "full_normalized.wav"
+        if not wav.exists():
+            log.error(f"Not found: {wav}")
+            failed.append(call_id)
+            continue
+
+        lang_str = f", language={args.language}" if args.language else ""
+        log.info(f"Re-running {call_id}{lang_str}")
+        try:
+            result = diarize(wav, OUTPUT_DIR, args.num_speakers, args.language)
+            log.info(f"  {len(result['turns'])} turns, {len(set(t['speaker'] for t in result['turns']))} speakers")
+            diarized_path = OUTPUT_DIR / f"{result['call_id']}_diarized.json"
+            scrub_file(diarized_path, SCRUB_DIR)
+        except Exception:
+            log.exception(f"Failed: {call_id}")
+            failed.append(call_id)
+
+    log.info(f"Done: {len(rejections) - len(failed)}/{len(rejections)} succeeded")
+    if failed:
+        log.info(f"Failed: {', '.join(failed)}")
+
+
+if __name__ == "__main__":
+    main()

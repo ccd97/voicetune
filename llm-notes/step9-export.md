@@ -1,4 +1,4 @@
-# Step 8: Export (Fish Speech Format)
+# Step 9: Export (Fish Speech Format)
 
 ## Purpose
 Export "me" turns as `.wav` + `.lab` pairs in the directory structure expected by Fish Speech for fine-tuning.

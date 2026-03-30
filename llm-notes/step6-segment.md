@@ -1,4 +1,4 @@
-# Step 5: Segment (Turn Segmentation)
+# Step 6: Segment (Turn Segmentation)
 
 ## Purpose
 

@@ -15,6 +15,9 @@ boto3>=1.38
 google-cloud-speech>=2.30
 google-cloud-storage>=2.19
 
+# Step 10: Finetune (GCP VM orchestration)
+google-cloud-compute>=1.22
+
 # Step 2: WhisperX mode (heavy — install only if using local mode)
 # Requires PyTorch: pip install torch torchaudio
 # whisperx @ git+https://github.com/m-bain/whisperX.git

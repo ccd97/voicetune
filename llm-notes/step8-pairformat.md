@@ -1,4 +1,4 @@
-# Step 7: Pair Format (Training Pair Generation)
+# Step 8: Pair Format (Training Pair Generation)
 
 ## Purpose
 Convert labeled dialogues into (input, output) training pairs for speech-to-speech model fine-tuning. Each pair has: context + prompt from "other" speaker as input, and "me" response as output.
