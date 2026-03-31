@@ -60,9 +60,14 @@ def main():
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     succeeded = 0
+    skipped = 0
     failed = []
 
     for json_file in json_files:
+        out_name = json_file.name.replace("_diarized.json", "_translated.json")
+        if (args.output_dir / out_name).exists():
+            skipped += 1
+            continue
         try:
             process_file(json_file, args.output_dir, backend=args.backend)
             succeeded += 1
@@ -70,6 +75,8 @@ def main():
             log.exception(f"Failed to process {json_file.name}")
             failed.append(json_file.name)
 
+    if skipped:
+        log.info(f"Skipped {skipped} already-translated file(s)")
     log.info(f"Summary: {succeeded} succeeded, {len(failed)} failed")
     if failed:
         log.info(f"Failed: {', '.join(failed)}")

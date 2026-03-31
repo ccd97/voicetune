@@ -63,9 +63,13 @@ def main():
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     succeeded = 0
+    skipped = 0
     failed = []
 
     for wav in wav_files:
+        if (args.output_dir / f"{wav.parent.name}_diarized.json").exists():
+            skipped += 1
+            continue
         try:
             result = process_file(wav, args.output_dir, args.mode, args.num_speakers, args.language)
             n_turns = len(result["turns"])
@@ -76,6 +80,8 @@ def main():
             log.exception(f"Failed to process {wav}")
             failed.append(str(wav))
 
+    if skipped:
+        log.info(f"Skipped {skipped} already-diarized file(s)")
     log.info(f"Summary: {succeeded} succeeded, {len(failed)} failed")
     if failed:
         log.info(f"Failed: {', '.join(failed)}")

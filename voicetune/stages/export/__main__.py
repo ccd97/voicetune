@@ -54,9 +54,14 @@ def main():
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     total_exported = 0
+    skipped = 0
     all_stats = []
 
     for dialogue_path in dialogue_files:
+        call_id = dialogue_path.parent.name
+        if any(args.output_dir.glob(f"{call_id}_turn_*.wav")):
+            skipped += 1
+            continue
         stats = process_file(
             dialogue_path, args.output_dir,
             min_duration=args.min_duration,
@@ -75,6 +80,8 @@ def main():
     with open(summary_path, "w") as f:
         json.dump(summary, f, indent=2)
 
+    if skipped:
+        log.info(f"Skipped {skipped} already-exported call(s)")
     log.info(f"Total: {total_exported} utterances exported to {args.output_dir}")
     log.info(f"Summary: {summary_path}")
 

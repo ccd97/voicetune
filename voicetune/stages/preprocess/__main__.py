@@ -40,9 +40,13 @@ def main():
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     succeeded = 0
+    skipped = 0
     failed = []
 
     for audio_file in audio_files:
+        if (args.output_dir / audio_file.stem / "full_normalized.wav").exists():
+            skipped += 1
+            continue
         try:
             process_file(audio_file, args.output_dir)
             succeeded += 1
@@ -50,6 +54,8 @@ def main():
             log.exception(f"Failed to process {audio_file.name}")
             failed.append(audio_file.name)
 
+    if skipped:
+        log.info(f"Skipped {skipped} already-processed file(s)")
     log.info(f"Summary: {succeeded} succeeded, {len(failed)} failed")
     if failed:
         log.info(f"Failed files: {', '.join(failed)}")
