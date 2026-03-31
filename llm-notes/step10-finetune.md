@@ -1,4 +1,4 @@
-# Step 10: Finetune (GCP A100 VM)
+# Step 10: Finetune (Cloud GPU)
 
 ## Purpose
 
@@ -16,6 +16,7 @@ Launch a GCP A100 VM that runs the full Fish Speech S2 Pro LoRA fine-tuning pipe
 | `--max-steps` | `4000` | Training steps |
 | `--test` | `False` | Spot A100, 1 step, auto-delete |
 | `--output-dir` | `./output/finetune` | Where to download finetuned model |
+| `--provider` | `gcp` | Cloud provider for fine-tuning |
 
 ## What It Does
 

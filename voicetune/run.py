@@ -233,6 +233,10 @@ def main():
         help="Finetune in test mode (spot A100, 1 step)"
     )
     parser.add_argument(
+        "--finetune-provider", type=str, default="gcp",
+        help="Cloud provider for fine-tuning (default: gcp)"
+    )
+    parser.add_argument(
         "--resume", action="store_true",
         help="Resume from the last failed/incomplete step using manifest.json"
     )
@@ -349,7 +353,7 @@ def main():
         timings["export"] = run_step("export", [], **step_kw)
 
     if "finetune" in steps_to_run:
-        finetune_args = []
+        finetune_args = ["--provider", args.finetune_provider]
         if args.finetune_test:
             finetune_args.append("--test")
         timings["finetune"] = run_step("finetune", finetune_args, **step_kw)

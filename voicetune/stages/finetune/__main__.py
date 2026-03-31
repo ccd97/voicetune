@@ -15,7 +15,7 @@ def main():
     setup_logging()
 
     parser = argparse.ArgumentParser(
-        description="Fine-tune Fish Speech S2 Pro via GCP A100 VM"
+        description="Fine-tune Fish Speech S2 Pro via cloud GPU"
     )
     parser.add_argument(
         "--run-dir", type=Path, default=Path("./output"),
@@ -37,6 +37,10 @@ def main():
         "--output-dir", type=Path, default=None,
         help="Where to download finetuned model (default: <run-dir>/finetune)"
     )
+    parser.add_argument(
+        "--provider", choices=["gcp", "aws"], default="gcp",
+        help="Cloud provider for fine-tuning (default: gcp)"
+    )
     args = parser.parse_args()
 
     if args.input_dir is None:
@@ -49,6 +53,7 @@ def main():
         max_steps=args.max_steps,
         test=args.test,
         output_dir=args.output_dir,
+        provider=args.provider,
     )
 
 
