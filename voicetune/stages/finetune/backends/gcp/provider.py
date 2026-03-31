@@ -189,7 +189,7 @@ def run(
     test: bool,
     output_dir: Path,
 ) -> dict:
-    project = os.environ["GCP_PROJECT"]
+    project = os.environ["GCP_PROJECT_ID"]
     instance = f"{INSTANCE_BASE}-test" if test else INSTANCE_BASE
     bucket = storage.Client(project=project).bucket(BUCKET_NAME)
     compute = compute_v1.InstancesClient()

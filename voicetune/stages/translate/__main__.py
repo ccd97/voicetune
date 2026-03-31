@@ -35,7 +35,11 @@ def main():
     args = parser.parse_args()
 
     if args.input_dir is None:
-        args.input_dir = args.run_dir / "diarized"
+        scrubbed = args.run_dir / "scrubbed"
+        if scrubbed.is_dir() and any(scrubbed.glob("*_diarized.json")):
+            args.input_dir = scrubbed
+        else:
+            args.input_dir = args.run_dir / "diarized"
     if args.output_dir is None:
         args.output_dir = args.run_dir / "translated"
 

@@ -28,6 +28,7 @@ def _get_llm():
     _llm = Llama(
         model_path=model_path,
         n_ctx=4096,
+        n_gpu_layers=-1,
         n_threads=os.cpu_count() or 4,
         verbose=False,
     )
