@@ -32,6 +32,10 @@ def main():
         "--output-dir", type=Path, default=None,
         help="Directory for translated output (default: <run-dir>/translated)"
     )
+    parser.add_argument(
+        "--backend", choices=["bedrock", "llamacpp"], default="llamacpp",
+        help="Translation backend (default: bedrock)"
+    )
     args = parser.parse_args()
 
     if args.input_dir is None:
@@ -60,7 +64,7 @@ def main():
 
     for json_file in json_files:
         try:
-            process_file(json_file, args.output_dir)
+            process_file(json_file, args.output_dir, backend=args.backend)
             succeeded += 1
         except Exception:
             log.exception(f"Failed to process {json_file.name}")

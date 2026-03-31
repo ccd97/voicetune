@@ -1,4 +1,4 @@
-"""Translation pipeline — uses Claude via Bedrock gateway to translate diarized turns."""
+"""Translation pipeline — translates diarized turns to English via Bedrock or llama.cpp."""
 
 import json
 import logging
@@ -10,6 +10,29 @@ from voicetune import prompts
 log = logging.getLogger(__name__)
 
 ENGLISH_CODES = {"en-US", "en-GB", "en-AU", "en-IN", "en"}
+BATCH_SIZE = 20
+
+_llm = None
+
+
+def _get_llm():
+    global _llm
+    if _llm is not None:
+        return _llm
+
+    from llama_cpp import Llama
+
+    model_path = os.environ["LLAMACPP_MODEL_PATH"]
+    log.info(f"Loading llama.cpp model for translate: {model_path}")
+
+    _llm = Llama(
+        model_path=model_path,
+        n_ctx=4096,
+        n_gpu_layers=-1,
+        n_threads=os.cpu_count() or 4,
+        verbose=False,
+    )
+    return _llm
 
 
 def is_latin_text(text: str, threshold: float = 0.7) -> bool:
@@ -33,10 +56,27 @@ def needs_translation(text: str, language: str) -> bool:
     return True
 
 
-def translate_batch(http_client, base_url: str, auth_token: str, model: str, turns: list[dict], source_lang: str) -> list[str]:
-    """Translate multiple turns in a single LLM call for efficiency."""
+def _build_prompt(turns: list[dict], source_lang: str) -> str:
     numbered_turns = "\n".join(f"{i+1}. {t['text']}" for i, t in enumerate(turns))
-    prompt = prompts.render("translate.j2", source_lang=source_lang, numbered_turns=numbered_turns)
+    return prompts.render("translate.j2", source_lang=source_lang, numbered_turns=numbered_turns)
+
+
+def _parse_translations(response_text: str) -> list[str]:
+    translations = []
+    for line in response_text.strip().split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        parts = line.split(".", 1)
+        if len(parts) == 2 and parts[0].strip().isdigit():
+            translations.append(parts[1].strip())
+        else:
+            translations.append(line)
+    return translations
+
+
+def _translate_batch_bedrock(http_client, base_url: str, auth_token: str, model: str, turns: list[dict], source_lang: str) -> list[str]:
+    prompt = _build_prompt(turns, source_lang)
 
     response = http_client.post(
         f"{base_url}/model/{model}/invoke",
@@ -53,33 +93,35 @@ def translate_batch(http_client, base_url: str, auth_token: str, model: str, tur
     )
     response.raise_for_status()
     result = response.json()
-
-    response_text = result["content"][0]["text"]
-
-    # Parse numbered responses
-    translations = []
-    for line in response_text.strip().split("\n"):
-        line = line.strip()
-        if not line:
-            continue
-        parts = line.split(".", 1)
-        if len(parts) == 2 and parts[0].strip().isdigit():
-            translations.append(parts[1].strip())
-        else:
-            translations.append(line)
-
-    return translations
+    return _parse_translations(result["content"][0]["text"])
 
 
-def process_file(input_path: Path, output_dir: Path) -> dict:
-    """Read a diarized JSON, add English translations via Claude, write to output."""
-    import httpx
+def _translate_batch_llamacpp(llm, turns: list[dict], source_lang: str) -> list[str]:
+    prompt = _build_prompt(turns, source_lang)
 
-    base_url = os.environ["ANTHROPIC_BEDROCK_BASE_URL"]
-    auth_token = os.environ["ANTHROPIC_AUTH_TOKEN"]
-    model = os.environ.get("TRANSLATE_MODEL", "us.anthropic.claude-haiku-4-5-20251001-v1:0")
-    ca_certs = os.environ.get("NODE_EXTRA_CA_CERTS", True)
-    http_client = httpx.Client(verify=ca_certs)
+    response = llm.create_chat_completion(
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.0,
+        max_tokens=4096,
+    )
+    return _parse_translations(response["choices"][0]["message"]["content"])
+
+
+def process_file(input_path: Path, output_dir: Path, backend: str = "llamacpp") -> dict:
+    """Read a diarized JSON, add English translations, write to output."""
+    if backend == "bedrock":
+        import httpx
+        base_url = os.environ["ANTHROPIC_BEDROCK_BASE_URL"]
+        auth_token = os.environ["ANTHROPIC_AUTH_TOKEN"]
+        model = os.environ.get("TRANSLATE_MODEL", "us.anthropic.claude-haiku-4-5-20251001-v1:0")
+        ca_certs = os.environ.get("NODE_EXTRA_CA_CERTS", True)
+        http_client = httpx.Client(verify=ca_certs)
+        translate_fn = lambda turns, lang: _translate_batch_bedrock(http_client, base_url, auth_token, model, turns, lang)
+        model_label = model
+    else:
+        llm = _get_llm()
+        translate_fn = lambda turns, lang: _translate_batch_llamacpp(llm, turns, lang)
+        model_label = os.environ["LLAMACPP_MODEL_PATH"]
 
     with open(input_path) as f:
         data = json.load(f)
@@ -87,9 +129,8 @@ def process_file(input_path: Path, output_dir: Path) -> dict:
     call_id = data["call_id"]
     source_lang_raw = data.get("language", "unknown")
 
-    log.info(f"Processing {call_id}: language={source_lang_raw}, model={model}")
+    log.info(f"Processing {call_id}: language={source_lang_raw}, backend={backend}, model={model_label}")
 
-    # Split turns into those needing translation and those that don't
     turns_to_translate = []
     translate_indices = []
 
@@ -98,23 +139,20 @@ def process_file(input_path: Path, output_dir: Path) -> dict:
             turns_to_translate.append(turn)
             translate_indices.append(i)
 
-    # Build result with text_en for all turns
     translated_turns = []
     for turn in data["turns"]:
         new_turn = dict(turn)
         new_turn["language"] = source_lang_raw
-        new_turn["text_en"] = turn["text"]  # default: keep original
+        new_turn["text_en"] = turn["text"]
         translated_turns.append(new_turn)
 
-    # Batch translate non-English turns
     if turns_to_translate:
-        batch_size = 20
-        for batch_start in range(0, len(turns_to_translate), batch_size):
-            batch = turns_to_translate[batch_start:batch_start + batch_size]
-            batch_indices = translate_indices[batch_start:batch_start + batch_size]
+        for batch_start in range(0, len(turns_to_translate), BATCH_SIZE):
+            batch = turns_to_translate[batch_start:batch_start + BATCH_SIZE]
+            batch_indices = translate_indices[batch_start:batch_start + BATCH_SIZE]
 
-            log.info(f"  Translating batch {batch_start//batch_size + 1} ({len(batch)} turns)...")
-            translations = translate_batch(http_client, base_url, auth_token, model, batch, source_lang_raw)
+            log.info(f"  Translating batch {batch_start // BATCH_SIZE + 1} ({len(batch)} turns)...")
+            translations = translate_fn(batch, source_lang_raw)
 
             for idx, translation in zip(batch_indices, translations):
                 translated_turns[idx]["text_en"] = translation

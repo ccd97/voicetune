@@ -237,6 +237,10 @@ def main():
         help="Cloud provider for fine-tuning (default: gcp)"
     )
     parser.add_argument(
+        "--translate-backend", choices=["bedrock", "llamacpp"], default="llamacpp",
+        help="Translation backend (default: bedrock)"
+    )
+    parser.add_argument(
         "--resume", action="store_true",
         help="Resume from the last failed/incomplete step using manifest.json"
     )
@@ -308,10 +312,10 @@ def main():
         timings["scrub"] = run_step("scrub", [], **step_kw)
 
     if "translate" in steps_to_run:
-        translate_args = []
+        translate_args = ["--backend", args.translate_backend]
         scrubbed_dir = run_dir / "scrubbed"
         if "scrub" in steps_to_run and scrubbed_dir.exists() and any(scrubbed_dir.glob("*_diarized.json")):
-            translate_args = ["--input-dir", str(scrubbed_dir)]
+            translate_args += ["--input-dir", str(scrubbed_dir)]
         timings["translate"] = run_step("translate", translate_args, **step_kw)
 
     if "correction" in steps_to_run:
