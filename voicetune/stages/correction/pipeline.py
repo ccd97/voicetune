@@ -1,9 +1,9 @@
-"""Claude-based speaker correction.
+"""LLM-based speaker correction.
 
-Takes translated AWS transcripts and uses Claude to correct speaker
-assignments using conversational context. AWS diarization often
-misattributes turns — Claude can use dialogue flow, names, and
-context to fix these errors.
+Takes translated transcripts and uses an LLM to correct speaker
+assignments using conversational context. Diarization often
+misattributes turns — the LLM uses dialogue flow, names, and
+context to fix these errors. Supports Bedrock (Claude) and llama.cpp backends.
 """
 
 import json
@@ -16,24 +16,58 @@ from voicetune import prompts
 
 log = logging.getLogger(__name__)
 
+_llm = None
+
+
+def _get_llm():
+    global _llm
+    if _llm is not None:
+        return _llm
+
+    from llama_cpp import Llama
+
+    model_path = os.environ["LLAMACPP_MODEL_PATH"]
+    log.info(f"Loading llama.cpp model for correction: {model_path}")
+
+    _llm = Llama(
+        model_path=model_path,
+        n_ctx=8192,
+        n_gpu_layers=-1,
+        n_threads=os.cpu_count() or 4,
+        verbose=False,
+    )
+    return _llm
+
 
 class RejectReason(str, Enum):
     """Quality issues reported by the LLM during correction."""
+    # Per-turn issues (reported on individual assignments)
     IMPROPER_DIARIZATION = "improper_diarization"
     INCORRECT_SPEAKER_ASSIGNMENT = "incorrect_speaker_assignment"
-    INCORRECT_SPEAKER_COUNT = "incorrect_speaker_count"
     GARBLED_TRANSCRIPT = "garbled_transcript"
+    # File-level issues (reported in top-level "issues")
+    INCORRECT_SPEAKER_COUNT = "incorrect_speaker_count"
     NONSENSICAL_CONVERSATION = "nonsensical_conversation"
     LANGUAGE_MISMATCH = "language_mismatch"
+    # Pre-LLM checks
+    LANGUAGE_NOT_ALLOWED = "language_not_allowed"
+    MONO_SPEAKER = "mono_speaker"
+    # Confidence gate
+    LOW_CONFIDENCE = "low_confidence"
+
+
+TURN_ISSUES = {
+    RejectReason.IMPROPER_DIARIZATION,
+    RejectReason.INCORRECT_SPEAKER_ASSIGNMENT,
+    RejectReason.GARBLED_TRANSCRIPT,
+}
 
 
 BATCH_SIZE = 80
 CONTEXT_OVERLAP = 10
 
 MIN_CONFIDENCE = 0.60
-MIN_TURNS = 4
-MIN_SPEAKERS = 2
-MAX_SPEAKERS = 4
+ALLOWED_LANGUAGES = set(os.environ.get("ALLOWED_LANGS", "en").split(","))
 MAX_PARSE_RETRIES = 2
 
 
@@ -113,7 +147,7 @@ def parse_response(response_text: str, num_turns: int) -> tuple[list[dict], floa
     return assignments, -1.0, []
 
 
-def _call_llm(http_client, base_url: str, auth_token: str, model: str, prompt: str, max_tokens: int = 8192) -> str:
+def _call_llm_bedrock(http_client, base_url: str, auth_token: str, model: str, prompt: str, max_tokens: int = 8192) -> str:
     response = http_client.post(
         f"{base_url}/model/{model}/invoke",
         headers={
@@ -131,24 +165,69 @@ def _call_llm(http_client, base_url: str, auth_token: str, model: str, prompt: s
     return response.json()["content"][0]["text"]
 
 
-def process_file(input_path: Path, output_dir: Path) -> dict:
-    """Correct speaker assignments in a translated transcript using Claude."""
-    import httpx
+def _call_llm_llamacpp(llm, prompt: str, max_tokens: int = 8192) -> str:
+    response = llm.create_chat_completion(
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.0,
+        max_tokens=max_tokens,
+    )
+    return response["choices"][0]["message"]["content"]
 
-    base_url = os.environ["ANTHROPIC_BEDROCK_BASE_URL"]
-    auth_token = os.environ["ANTHROPIC_AUTH_TOKEN"]
-    model = os.environ.get("CORRECTION_MODEL", "us.anthropic.claude-haiku-4-5-20251001-v1:0")
-    ca_certs = os.environ.get("NODE_EXTRA_CA_CERTS", True)
-    http_client = httpx.Client(verify=ca_certs)
 
+def process_file(input_path: Path, output_dir: Path, backend: str = "llamacpp") -> dict:
+    """Correct speaker assignments in a translated transcript."""
     with open(input_path) as f:
         data = json.load(f)
 
     call_id = data["call_id"]
     turns = data["turns"]
+    language = data.get("language", "unknown")
+    num_speakers = data["num_speakers"]
+
+    reject_reasons = []
+    if language not in ALLOWED_LANGUAGES:
+        reject_reasons.append(RejectReason.LANGUAGE_NOT_ALLOWED.value)
+    if num_speakers < 2:
+        reject_reasons.append(RejectReason.MONO_SPEAKER.value)
+
+    if reject_reasons:
+        log.warning(f"  REJECTED {call_id} ({', '.join(reject_reasons)})")
+        output = dict(data)
+        output["rejected"] = True
+        output["reject_reasons"] = reject_reasons
+        output["correction_confidence"] = -1.0
+
+        output_dir.mkdir(parents=True, exist_ok=True)
+        out_path = output_dir / f"{call_id}_corrected.json"
+        with open(out_path, "w") as f:
+            json.dump(output, f, indent=2, ensure_ascii=False)
+
+        return {
+            "rejected": True,
+            "call_id": call_id,
+            "reasons": reject_reasons,
+            "confidence": -1.0,
+            "num_turns": len(turns),
+            "num_speakers": num_speakers,
+        }
+
+    if backend == "bedrock":
+        import httpx
+        base_url = os.environ["ANTHROPIC_BEDROCK_BASE_URL"]
+        auth_token = os.environ["ANTHROPIC_AUTH_TOKEN"]
+        model = os.environ.get("CORRECTION_MODEL", "us.anthropic.claude-haiku-4-5-20251001-v1:0")
+        ca_certs = os.environ.get("NODE_EXTRA_CA_CERTS", True)
+        http_client = httpx.Client(verify=ca_certs)
+        call_fn = lambda prompt, max_tokens=8192: _call_llm_bedrock(http_client, base_url, auth_token, model, prompt, max_tokens)
+        model_label = model
+    else:
+        llm = _get_llm()
+        call_fn = lambda prompt, max_tokens=8192: _call_llm_llamacpp(llm, prompt, max_tokens)
+        model_label = os.environ["LLAMACPP_MODEL_PATH"]
+
     num_batches = (len(turns) + BATCH_SIZE - 1) // BATCH_SIZE
 
-    log.info(f"Correcting speakers for {call_id}: {len(turns)} turns, model={model}"
+    log.info(f"Correcting speakers for {call_id}: {len(turns)} turns, backend={backend}, model={model_label}"
              + (f", {num_batches} batches" if num_batches > 1 else ""))
 
     all_assignments = []
@@ -168,7 +247,7 @@ def process_file(input_path: Path, output_dir: Path) -> dict:
             log.info(f"  Batch {batch_idx + 1}/{num_batches} (turns {start}-{end - 1})")
 
         for attempt in range(1 + MAX_PARSE_RETRIES):
-            response_text = _call_llm(http_client, base_url, auth_token, model, prompt)
+            response_text = call_fn(prompt)
             try:
                 batch_assignments, confidence, issues = parse_response(response_text, len(batch))
                 break
@@ -198,6 +277,9 @@ def process_file(input_path: Path, output_dir: Path) -> dict:
     changes = 0
     speaker_names = {}
 
+    turn_issue_values = {r.value for r in TURN_ISSUES}
+    all_turn_issues: set[str] = set()
+
     for i, turn in enumerate(turns):
         new_turn = dict(turn)
 
@@ -217,6 +299,11 @@ def process_file(input_path: Path, output_dir: Path) -> dict:
             if name:
                 speaker_names[new_speaker] = name
 
+            turn_issues = [v for v in a.get("issues", []) if v in turn_issue_values]
+            if turn_issues:
+                new_turn["issues"] = turn_issues
+                all_turn_issues.update(turn_issues)
+
         corrected_turns.append(new_turn)
 
     speakers = sorted(set(t["speaker"] for t in corrected_turns))
@@ -226,29 +313,36 @@ def process_file(input_path: Path, output_dir: Path) -> dict:
     if overall_confidence >= 0:
         log.info(f"  Confidence: {overall_confidence:.2f}")
 
-    # LLM-reported issues
-    llm_reasons = list(dict.fromkeys(all_issues))  # dedupe, preserve order
+    # File-level LLM issues
+    llm_reasons = list(dict.fromkeys(all_issues))
     if llm_reasons:
-        log.warning(f"  LLM issues: {', '.join(r.value for r in llm_reasons)}")
+        log.warning(f"  File-level issues: {', '.join(r.value for r in llm_reasons)}")
+    if all_turn_issues:
+        log.warning(f"  Turn-level issues: {', '.join(sorted(all_turn_issues))}")
 
-    # Deterministic checks
-    reject = bool(llm_reasons) or (0 <= overall_confidence < MIN_CONFIDENCE)
-    if len(corrected_turns) < MIN_TURNS:
-        reject = True
-        log.warning(f"  Too few turns: {len(corrected_turns)}")
-    if len(speakers) < MIN_SPEAKERS:
-        reject = True
-        log.warning(f"  Mono speaker")
-    if len(speakers) > MAX_SPEAKERS:
-        reject = True
-        log.warning(f"  Too many speakers: {len(speakers)}")
+    all_reject_reasons = [r.value for r in llm_reasons] + sorted(all_turn_issues - {r.value for r in llm_reasons})
+    if 0 <= overall_confidence < MIN_CONFIDENCE:
+        all_reject_reasons.append(RejectReason.LOW_CONFIDENCE.value)
+    reject = bool(all_reject_reasons)
 
     if reject:
         log.warning(f"  REJECTED {call_id}")
+        output = dict(data)
+        output["rejected"] = True
+        output["reject_reasons"] = all_reject_reasons
+        output["correction_confidence"] = overall_confidence
+        output["turns"] = corrected_turns
+
+        output_dir.mkdir(parents=True, exist_ok=True)
+        out_path = output_dir / f"{call_id}_corrected.json"
+        with open(out_path, "w") as f:
+            json.dump(output, f, indent=2, ensure_ascii=False)
+        log.info(f"  Saved to {out_path}")
+
         return {
             "rejected": True,
             "call_id": call_id,
-            "reasons": [r.value for r in llm_reasons],
+            "reasons": all_reject_reasons,
             "confidence": overall_confidence,
             "num_turns": len(corrected_turns),
             "num_speakers": len(speakers),
@@ -259,6 +353,7 @@ def process_file(input_path: Path, output_dir: Path) -> dict:
         "call_id": call_id,
         "mode": data.get("mode", "unknown"),
         "language": data.get("language", "unknown"),
+        "num_speakers": num_speakers,
         "speaker_names": speaker_names,
         "correction_confidence": overall_confidence,
         "turns": corrected_turns,

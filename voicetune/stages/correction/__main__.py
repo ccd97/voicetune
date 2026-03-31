@@ -1,7 +1,6 @@
 """CLI entry point: python -m voicetune.stages.correction"""
 
 import argparse
-import json
 import logging
 from pathlib import Path
 
@@ -31,14 +30,18 @@ def main():
     )
     parser.add_argument(
         "--output-dir", type=Path, default=None,
-        help="Output directory for corrected diarization (default: <run-dir>/diarized)"
+        help="Output directory for corrected diarization (default: <run-dir>/corrected)"
+    )
+    parser.add_argument(
+        "--backend", choices=["bedrock", "llamacpp"], default="llamacpp",
+        help="Correction backend (default: llamacpp)"
     )
     args = parser.parse_args()
 
     if args.input_dir is None:
         args.input_dir = args.run_dir / "translated"
     if args.output_dir is None:
-        args.output_dir = args.run_dir / "diarized"
+        args.output_dir = args.run_dir / "corrected"
 
     translated_files = sorted(args.input_dir.glob("*_translated.json"))
     if not translated_files:
@@ -49,11 +52,16 @@ def main():
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     succeeded = 0
+    skipped = 0
     failed = []
     rejections = []
     for path in translated_files:
+        out_name = path.name.replace("_translated.json", "_corrected.json")
+        if (args.output_dir / out_name).exists():
+            skipped += 1
+            continue
         try:
-            result = process_file(path, args.output_dir)
+            result = process_file(path, args.output_dir, backend=args.backend)
             if result and result.get("rejected"):
                 rejections.append(result)
                 continue
@@ -70,16 +78,14 @@ def main():
             log.exception(f"Failed to process {path}")
             failed.append(path.name)
 
+    if skipped:
+        log.info(f"Skipped {skipped} already-corrected file(s)")
     log.info(f"Summary: {succeeded} succeeded, {len(failed)} failed")
     if failed:
         log.info(f"Failed: {', '.join(failed)}")
 
     if rejections:
         log.info(f"Rejected {len(rejections)}/{len(translated_files)} conversation(s)")
-        rejected_path = args.output_dir / "rejected.json"
-        with open(rejected_path, "w") as f:
-            json.dump(rejections, f, indent=2)
-        log.info(f"Rejection manifest: {rejected_path}")
 
 
 if __name__ == "__main__":

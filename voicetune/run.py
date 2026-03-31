@@ -4,7 +4,6 @@ import argparse
 import json
 import logging
 import os
-import shutil
 import subprocess
 import sys
 import time
@@ -238,7 +237,11 @@ def main():
     )
     parser.add_argument(
         "--translate-backend", choices=["bedrock", "llamacpp"], default="llamacpp",
-        help="Translation backend (default: bedrock)"
+        help="Translation backend (default: llamacpp)"
+    )
+    parser.add_argument(
+        "--correction-backend", choices=["bedrock", "llamacpp"], default="llamacpp",
+        help="Correction backend (default: llamacpp)"
     )
     parser.add_argument(
         "--resume", action="store_true",
@@ -319,12 +322,7 @@ def main():
         timings["translate"] = run_step("translate", translate_args, **step_kw)
 
     if "correction" in steps_to_run:
-        timings["correction"] = run_step("correction", [], **step_kw)
-        diarized_dir = run_dir / "diarized"
-        for f in diarized_dir.glob("*_corrected.json"):
-            target = diarized_dir / f.name.replace("_corrected.json", "_diarized.json")
-            shutil.copy2(f, target)
-            log.info(f"  Copied {f.name} -> {target.name}")
+        timings["correction"] = run_step("correction", ["--backend", args.correction_backend], **step_kw)
 
     if "segment" in steps_to_run:
         timings["segment"] = run_step("segment", [], **step_kw)

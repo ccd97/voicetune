@@ -1,7 +1,7 @@
 """Re-run diarization for calls rejected by the correction step.
 
-Reads output/diarized/rejected.json (written by correction step) and
-re-runs diarization with the chosen backend. Optionally force a language.
+Scans output/corrected/ for _corrected.json files with "rejected": true
+and re-runs diarization with the chosen backend. Optionally force a language.
 
 Usage:
   python scripts/rerun_rejected.py --mode mlx
@@ -25,7 +25,8 @@ log = logging.getLogger(__name__)
 INPUT_DIR = Path("./output/preprocessed")
 OUTPUT_DIR = Path("./output/diarized")
 SCRUB_DIR = Path("./output/scrubbed")
-REJECTED_PATH = OUTPUT_DIR / "rejected.json"
+TRANSLATED_DIR = Path("./output/translated")
+CORRECTED_DIR = Path("./output/corrected")
 
 BACKENDS = ["aws", "whisperx", "mlx"]
 
@@ -39,16 +40,21 @@ def main():
     parser.add_argument("--num-speakers", type=int, default=None, help="Expected number of speakers")
     parser.add_argument("--reasons", nargs="+", choices=valid_reasons, default=None,
                         help="Only re-run calls matching these reasons")
-    parser.add_argument("--rejected", type=Path, default=REJECTED_PATH, help="Path to rejected.json")
+    parser.add_argument("--corrected-dir", type=Path, default=CORRECTED_DIR,
+                        help="Directory with corrected JSON files (default: ./output/corrected)")
     args = parser.parse_args()
 
-    if not args.rejected.exists():
-        log.error(f"No rejection manifest found at {args.rejected}")
-        log.error("Run the correction step first: python -m voicetune.stages.correction")
-        return
-
-    with open(args.rejected) as f:
-        rejections = json.load(f)
+    rejections = []
+    for path in sorted(args.corrected_dir.glob("*_corrected.json")):
+        with open(path) as f:
+            data = json.load(f)
+        if not data.get("rejected"):
+            continue
+        rejections.append({
+            "call_id": data["call_id"],
+            "reasons": data.get("reject_reasons", []),
+            "confidence": data.get("correction_confidence", -1.0),
+        })
 
     if args.reasons:
         filter_set = set(args.reasons)
@@ -74,6 +80,14 @@ def main():
             log.error(f"Not found: {wav}")
             failed.append(call_id)
             continue
+
+        for stale in [
+            args.corrected_dir / f"{call_id}_corrected.json",
+            TRANSLATED_DIR / f"{call_id}_translated.json",
+        ]:
+            if stale.exists():
+                stale.unlink()
+                log.info(f"  Deleted stale {stale}")
 
         lang_str = f", language={args.language}" if args.language else ""
         log.info(f"Re-running {call_id}{lang_str}")

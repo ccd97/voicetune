@@ -16,7 +16,7 @@ Return a JSON object with the following structure:
   "confidence": 0.85,
   "issues": [],
   "assignments": [
-    {"index": {{ offset }}, "speaker": "spk_0", "name": "...", "reasoning": "..."},
+    {"index": {{ offset }}, "speaker": "spk_0", "name": "...", "reasoning": "...", "issues": []},
     ...
   ]
 }
@@ -29,15 +29,21 @@ nonsensical, turns are clearly misaligned with audio timing, or the conversation
 makes no sense. Score HIGH (> 0.8) when: speaker identities are clear, conversation flows
 naturally, and you only needed minor corrections.
 
-"issues" is an array of quality problems you detected. Use ONLY these values:
-- "improper_diarization" — speaker boundaries are clearly wrong (turns split mid-sentence, overlapping segments attributed to wrong speakers)
-- "incorrect_speaker_assignment" — speakers are systematically swapped or confused throughout
+There are two levels of issues: **per-turn** (on each assignment) and **file-level** (top-level "issues").
+
+Per-turn "issues" on each assignment — flag specific turns. Use ONLY these values:
+- "improper_diarization" — this turn's speaker boundary is wrong (split mid-sentence, overlapping segment attributed to wrong speaker)
+- "incorrect_speaker_assignment" — this turn is attributed to the wrong speaker
+- "garbled_transcript" — this turn's text is unintelligible, full of ASR errors, or doesn't form coherent speech
+
+Leave per-turn "issues" as an empty array if the turn is fine.
+
+File-level "issues" (top-level) — problems with the whole conversation. Use ONLY these values:
 - "incorrect_speaker_count" — the number of distinct speakers in the transcript doesn't match the actual conversation (e.g. one person split into multiple labels, or two people merged into one)
-- "garbled_transcript" — the text is mostly unintelligible, full of ASR errors, or doesn't form coherent speech
 - "nonsensical_conversation" — the conversation flow makes no logical sense even after correction (random unrelated utterances, no coherent topic)
 - "language_mismatch" — the transcript language doesn't match the actual spoken language (e.g. Hindi transcribed as English, or mixed-language call transcribed as single language)
 
-Leave "issues" as an empty array if the transcript is fine.
+Leave file-level "issues" as an empty array if the conversation as a whole is fine.
 
 Rules:
 - Keep the original spk_N labels where they are correct

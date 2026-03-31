@@ -1,12 +1,12 @@
-# Step 5: Correction (Claude-based Speaker Correction)
+# Step 5: Correction (LLM-based Speaker Correction)
 
 ## Purpose
 
-Correct speaker diarization errors using Claude's understanding of conversational context. AWS Transcribe often misattributes turns — Claude uses dialogue flow, names, and context to fix these errors.
+Correct speaker diarization errors using an LLM's understanding of conversational context. Diarization often misattributes turns — the LLM uses dialogue flow, names, and context to fix these errors. Supports Bedrock (Claude) and llama.cpp backends.
 
 ## Module
 
-`voicetune/correction/` — run via `python -m voicetune.correction`
+`voicetune/stages/correction/` — run via `python -m voicetune.stages.correction`
 
 ## CLI Args
 
@@ -14,7 +14,8 @@ Correct speaker diarization errors using Claude's understanding of conversationa
 | Flag           | Default               | Description                             |
 | -------------- | --------------------- | --------------------------------------- |
 | `--input-dir`  | `./output/translated` | Directory with translated JSON files    |
-| `--output-dir` | `./output/diarized`   | Output directory (overwrites diarized!) |
+| `--output-dir` | `./output/corrected`  | Output directory for corrected files    |
+| `--backend`    | `llamacpp`            | Backend: `bedrock` or `llamacpp`        |
 
 
 ## What It Does
@@ -34,70 +35,115 @@ Correct speaker diarization errors using Claude's understanding of conversationa
 
 **Input:** `output/translated/{call_id}_translated.json`
 
-**Output:**
+**Output:** `output/corrected/{call_id}_corrected.json` — one file per recording, always.
 
+Accepted:
 ```json
-// output/diarized/{call_id}_corrected.json
 {
   "call_id": "call_recording",
   "mode": "aws",
   "language": "hi-IN",
   "speaker_names": {"spk_0": "Amit", "spk_1": "Customer"},
+  "correction_confidence": 0.85,
   "turns": [
     {"speaker": "spk_0", "start": 0.0, "end": 3.2, "text": "...", "text_en": "..."}
   ]
 }
 ```
 
+Rejected (corrected turns with per-turn issues preserved):
+```json
+{
+  "call_id": "call_recording",
+  "mode": "aws",
+  "language": "hi-IN",
+  "rejected": true,
+  "reject_reasons": ["garbled_transcript", "incorrect_speaker_count"],
+  "correction_confidence": 0.40,
+  "turns": [
+    {"speaker": "spk_0", "start": 0.0, "end": 3.2, "text": "...", "issues": ["garbled_transcript"]},
+    {"speaker": "spk_1", "start": 3.5, "end": 6.0, "text": "..."}
+  ]
+}
+```
+
 ## Pipeline Integration
 
-- Output goes to `output/diarized/` as `*_corrected.json`
-- The `run.py` orchestrator copies `*_corrected.json` over `*_diarized.json` so the segment step picks up corrected labels
+- Output goes to `output/corrected/` as `*_corrected.json`
+- Step 6 (segment) reads directly from `output/corrected/`, skipping files with `"rejected": true`
 - Uses `text_en` (English translation) in the prompt so Claude can reason about non-English calls
 
-## Claude Prompt Strategy
+## Prompt Strategy
 
 - Presents transcript as numbered lines: `[index] speaker (start - end): text`
 - Asks for JSON array with `{index, speaker, name, reasoning}` per turn
 - Rules: keep original labels where correct, identify speakers by name when possible, reflect actual number of participants
+- Same prompt template (`correction.j2`) used by both backends
+- `max_tokens=8192`
+
+### Bedrock backend
+
 - Model: `CORRECTION_MODEL` env var, defaults to Claude Haiku 4.5
-- `max_tokens=8192`, timeout 120s
+- Uses httpx with 120s timeout
+
+### llama.cpp backend
+
+- Uses llama-cpp-python with `create_chat_completion` (text-only)
+- Model cached across files via module-level `_get_llm()`
+- `n_ctx=8192` to match the response token budget
+- `temperature=0` for deterministic output
 
 ## Environment Variables
 
-Same as translate step: `ANTHROPIC_BEDROCK_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, `CORRECTION_MODEL`, `NODE_EXTRA_CA_CERTS`
+
+| Var                          | Backend   | Description                     |
+| ---------------------------- | --------- | ------------------------------- |
+| `ANTHROPIC_BEDROCK_BASE_URL` | bedrock   | Bedrock gateway URL             |
+| `ANTHROPIC_AUTH_TOKEN`       | bedrock   | Auth bearer token               |
+| `CORRECTION_MODEL`           | bedrock   | Claude model ID (optional)      |
+| `NODE_EXTRA_CA_CERTS`        | bedrock   | Custom CA certs path (optional) |
+| `LLAMACPP_MODEL_PATH`        | llamacpp  | Path to GGUF model file         |
 
 ## Dependencies
 
-`httpx`, `python-dotenv`
+`httpx`, `python-dotenv`, `llama-cpp-python` (for llamacpp backend)
 
 ## Quality Gate
 
 Claude returns a confidence score (0.0–1.0) and an `issues` array alongside each batch. The response format is: `{"confidence": 0.85, "issues": [], "assignments": [...]}`.
 
-### LLM-reported issues (`RejectReason` enum)
+### Per-turn issues (on each assignment)
 
 | Value | Meaning |
 |-------|---------|
-| `improper_diarization` | Speaker boundaries clearly wrong (mid-sentence splits, misattributed overlap) |
-| `incorrect_speaker_assignment` | Speakers systematically swapped or confused throughout |
+| `improper_diarization` | This turn's speaker boundary is wrong (split mid-sentence, overlap misattributed) |
+| `incorrect_speaker_assignment` | This turn is attributed to the wrong speaker |
+| `garbled_transcript` | This turn's text is unintelligible or full of ASR errors |
+
+These appear in each turn's `"issues"` array in the output. If any turn has issues, the whole file is rejected.
+
+### File-level issues (top-level "issues")
+
+| Value | Meaning |
+|-------|---------|
 | `incorrect_speaker_count` | Speaker count doesn't match reality (one person split, or two merged) |
-| `garbled_transcript` | Mostly unintelligible ASR output |
 | `nonsensical_conversation` | No coherent conversation flow even after correction |
 | `language_mismatch` | Transcript language doesn't match actual spoken language |
 
-### Deterministic checks (not in the enum)
+### Pre-LLM checks
+
+- Language not in `ALLOWED_LANGS` env var
+- Mono speaker (`num_speakers < 2`)
+
+### Confidence check
 
 - Confidence < 0.60 (min across batches)
-- Fewer than 4 turns
-- Fewer than 2 speakers (mono-speaker)
-- More than 4 speakers
 
-A conversation is rejected if it has any LLM-reported issues, fails confidence, or fails any deterministic check. Rejected calls produce no `_corrected.json`; the CLI writes a `rejected.json` manifest with call IDs, reasons, confidence, and counts. The re-run script (`scripts/rerun_mlx_rejected.py`) can filter by `--reasons` using the enum values.
+A conversation is rejected if it has any issues (per-turn or file-level), fails a pre-LLM check, or fails confidence. Every call produces a `_corrected.json` — rejected ones have `"rejected": true`, `"reject_reasons"`, and corrected turns with per-turn `"issues"`. Files that already exist in the output directory are skipped, so interrupted runs can be resumed. The re-run script (`scripts/rerun_rejected.py`) globs `output/corrected/` and filters by `"rejected": true`; use `--reasons` to filter by specific values.
 
 ## Key Implementation Details
 
-- Response parsing finds JSON array boundaries (`[` to `]`) in Claude's response
+- Response parsing finds JSON object/array boundaries in the LLM response
 - Warns if number of assignments doesn't match number of turns (uses original labels for missing)
 - Per-turn changes logged at DEBUG level; summary at INFO
 - Output format is compatible with both the diarized and translated formats (has turns[] with speaker, start, end, text fields)

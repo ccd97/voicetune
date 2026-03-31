@@ -38,5 +38,6 @@ def process_file(audio_path: Path, output_dir: Path, mode: str,
         from .backends.mlx_backend import diarize
 
     result = diarize(audio_path, num_speakers, language)
+    result["num_speakers"] = len(set(t["speaker"] for t in result["turns"]))
     save_result(result, output_dir)
     return result

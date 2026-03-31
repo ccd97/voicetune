@@ -165,6 +165,7 @@ def process_file(input_path: Path, output_dir: Path, backend: str = "llamacpp") 
         "call_id": call_id,
         "mode": data.get("mode", "unknown"),
         "language": source_lang_raw,
+        "num_speakers": data.get("num_speakers"),
         "turns": translated_turns,
     }
 

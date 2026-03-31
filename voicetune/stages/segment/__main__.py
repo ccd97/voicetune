@@ -1,6 +1,7 @@
 """CLI entry point: python -m voicetune.stages.segment"""
 
 import argparse
+import json
 import logging
 from pathlib import Path
 
@@ -23,7 +24,7 @@ def main():
     )
     parser.add_argument(
         "--input-dir", type=Path, default=None,
-        help="Directory containing diarized JSON files (default: <run-dir>/diarized)"
+        help="Directory containing corrected JSON files (default: <run-dir>/corrected)"
     )
     parser.add_argument(
         "--audio-dir", type=Path, default=None,
@@ -40,7 +41,7 @@ def main():
     args = parser.parse_args()
 
     if args.input_dir is None:
-        args.input_dir = args.run_dir / "diarized"
+        args.input_dir = args.run_dir / "corrected"
     if args.audio_dir is None:
         args.audio_dir = args.run_dir / "preprocessed"
     if args.output_dir is None:
@@ -50,18 +51,24 @@ def main():
         log.error(f"Input directory does not exist: {args.input_dir}")
         return
 
-    json_files = sorted(args.input_dir.glob("*_diarized.json"))
+    json_files = sorted(args.input_dir.glob("*_corrected.json"))
     if not json_files:
-        log.warning(f"No diarized JSON files found in {args.input_dir}")
+        log.warning(f"No corrected JSON files found in {args.input_dir}")
         return
 
     log.info(f"Found {len(json_files)} file(s)")
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     succeeded = 0
+    skipped = 0
     failed = []
 
     for json_file in json_files:
+        with open(json_file) as f:
+            data = json.load(f)
+        if data.get("rejected"):
+            skipped += 1
+            continue
         try:
             process_file(json_file, args.audio_dir, args.output_dir, args.merge_gap)
             succeeded += 1
@@ -69,7 +76,7 @@ def main():
             log.exception(f"Failed to process {json_file.name}")
             failed.append(json_file.name)
 
-    log.info(f"Summary: {succeeded} succeeded, {len(failed)} failed")
+    log.info(f"Summary: {succeeded} succeeded, {skipped} skipped (rejected), {len(failed)} failed")
     if failed:
         log.info(f"Failed: {', '.join(failed)}")
 

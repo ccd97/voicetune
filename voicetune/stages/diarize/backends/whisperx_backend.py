@@ -16,7 +16,7 @@ _whisper_model = None
 _diarize_model = None
 
 SUPPORTED_ALIGN_LANGS = set(
-    os.environ.get("WHISPERX_ALIGN_LANGS", "en,hi,mr").split(",")
+    os.environ.get("ALLOWED_LANGS", "en").split(",")
 )
 
 

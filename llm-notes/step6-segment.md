@@ -13,7 +13,7 @@ Merge consecutive same-speaker turns, cut per-turn WAV files from the preprocess
 
 | Flag             | Default                 | Description                                      |
 | ---------------- | ----------------------- | ------------------------------------------------ |
-| `--input-dir`    | `./output/diarized`     | Directory with diarized JSON files               |
+| `--input-dir`    | `./output/corrected`    | Directory with corrected JSON files              |
 | `--audio-dir`    | `./output/preprocessed` | Directory with preprocessed WAV files            |
 | `--output-dir`   | `./output/segmented`    | Where to write segmented output                  |
 | `--merge-gap`    | `0.5`                   | Max gap (seconds) to merge same-speaker segments |
@@ -21,7 +21,7 @@ Merge consecutive same-speaker turns, cut per-turn WAV files from the preprocess
 
 ## What It Does
 
-1. **Read** each `*_diarized.json`
+1. **Read** each `*_corrected.json` (skip files with `"rejected": true`)
 2. **Merge** consecutive turns from the same speaker when gap <= merge-gap (default 0.5s)
 3. **Load** the preprocessed `full_normalized.wav` for the call
 4. **Cut** per-turn audio segments based on start/end timestamps
@@ -36,7 +36,7 @@ Merge consecutive same-speaker turns, cut per-turn WAV files from the preprocess
 
 **Input:**
 
-- `output/diarized/{call_id}_diarized.json` (turn boundaries + text)
+- `output/corrected/{call_id}_corrected.json` (turn boundaries + text; rejected files are skipped)
 - `output/preprocessed/{call_id}/full_normalized.wav` (source audio)
 
 **Output:**
