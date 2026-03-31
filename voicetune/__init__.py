@@ -5,7 +5,7 @@ Pipeline steps:
     2. diarize     — speaker diarization + transcription
     3. scrub       — PII redaction via local LLM (optional, SKIP_STEPS=scrub)
     4. translate   — translate non-English turns via Claude (optional, SKIP_STEPS=translate)
-    5. correction  — fix speaker labels via Claude (optional, SKIP_STEPS=correction)
+    5. validation  — fix speaker labels via Claude (optional, SKIP_STEPS=validation)
     6. segment     — merge turns, cut per-turn audio
     7. label       — identify 'me' vs 'other' via voiceprint
     8. export      — export to Fish Speech format

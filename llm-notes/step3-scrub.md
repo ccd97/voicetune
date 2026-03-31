@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Detect and discard conversation turns containing sensitive data before transcripts are sent to Claude for translation and correction. Runs entirely on a local LLM via llama-cpp-python so no PII leaves the machine.
+Detect and discard conversation turns containing sensitive data before transcripts are sent to Claude for translation and validation. Runs entirely on a local LLM via llama-cpp-python so no PII leaves the machine.
 
 ## Module
 

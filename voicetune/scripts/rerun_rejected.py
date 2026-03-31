@@ -1,6 +1,6 @@
-"""Re-run diarization for calls rejected by the correction step.
+"""Re-run diarization for calls rejected by the validation step.
 
-Scans output/corrected/ for _corrected.json files with "rejected": true
+Scans output/validated/ for _validated.json files with "rejected": true
 and re-runs diarization with the chosen backend. Optionally force a language.
 
 Usage:
@@ -14,7 +14,7 @@ import json
 import logging
 from pathlib import Path
 
-from voicetune.stages.correction.pipeline import RejectReason
+from voicetune.stages.validation.pipeline import RejectReason
 
 from dotenv import load_dotenv
 
@@ -26,7 +26,7 @@ INPUT_DIR = Path("./output/preprocessed")
 OUTPUT_DIR = Path("./output/diarized")
 SCRUB_DIR = Path("./output/scrubbed")
 TRANSLATED_DIR = Path("./output/translated")
-CORRECTED_DIR = Path("./output/corrected")
+VALIDATED_DIR = Path("./output/validated")
 
 BACKENDS = ["aws", "whisperx", "mlx"]
 
@@ -34,18 +34,18 @@ BACKENDS = ["aws", "whisperx", "mlx"]
 def main():
     valid_reasons = [r.value for r in RejectReason]
 
-    parser = argparse.ArgumentParser(description="Re-run diarization for correction-rejected calls")
+    parser = argparse.ArgumentParser(description="Re-run diarization for validation-rejected calls")
     parser.add_argument("--mode", choices=BACKENDS, required=True, help="Diarization backend")
     parser.add_argument("--language", type=str, default=None, help="Force language (e.g. 'mr', 'hi')")
     parser.add_argument("--num-speakers", type=int, default=None, help="Expected number of speakers")
     parser.add_argument("--reasons", nargs="+", choices=valid_reasons, default=None,
                         help="Only re-run calls matching these reasons")
-    parser.add_argument("--corrected-dir", type=Path, default=CORRECTED_DIR,
-                        help="Directory with corrected JSON files (default: ./output/corrected)")
+    parser.add_argument("--validated-dir", type=Path, default=VALIDATED_DIR,
+                        help="Directory with validated JSON files (default: ./output/validated)")
     args = parser.parse_args()
 
     rejections = []
-    for path in sorted(args.corrected_dir.glob("*_corrected.json")):
+    for path in sorted(args.validated_dir.glob("*_validated.json")):
         with open(path) as f:
             data = json.load(f)
         if not data.get("rejected"):
@@ -53,7 +53,7 @@ def main():
         rejections.append({
             "call_id": data["call_id"],
             "reasons": data.get("reject_reasons", []),
-            "confidence": data.get("correction_confidence", -1.0),
+            "confidence": data.get("validation_confidence", -1.0),
         })
 
     if args.reasons:
@@ -82,7 +82,7 @@ def main():
             continue
 
         for stale in [
-            args.corrected_dir / f"{call_id}_corrected.json",
+            args.validated_dir / f"{call_id}_validated.json",
             TRANSLATED_DIR / f"{call_id}_translated.json",
         ]:
             if stale.exists():

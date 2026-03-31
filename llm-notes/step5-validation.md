@@ -1,12 +1,12 @@
-# Step 5: Correction (LLM-based Speaker Correction)
+# Step 5: Validation (LLM-based Speaker Validation)
 
 ## Purpose
 
-Correct speaker diarization errors using an LLM's understanding of conversational context. Diarization often misattributes turns — the LLM uses dialogue flow, names, and context to fix these errors. Supports Bedrock (Claude) and llama.cpp backends.
+Validate and fix speaker diarization errors using an LLM's understanding of conversational context. Diarization often misattributes turns — the LLM uses dialogue flow, names, and context to fix these errors. Supports Bedrock (Claude) and llama.cpp backends.
 
 ## Module
 
-`voicetune/stages/correction/` — run via `python -m voicetune.stages.correction`
+`voicetune/stages/validation/` — run via `python -m voicetune.stages.validation`
 
 ## CLI Args
 
@@ -14,7 +14,7 @@ Correct speaker diarization errors using an LLM's understanding of conversationa
 | Flag           | Default               | Description                             |
 | -------------- | --------------------- | --------------------------------------- |
 | `--input-dir`  | `./output/translated` | Directory with translated JSON files    |
-| `--output-dir` | `./output/corrected`  | Output directory for corrected files    |
+| `--output-dir` | `./output/validated`  | Output directory for validated files    |
 | `--backend`    | `llamacpp`            | Backend: `bedrock` or `llamacpp`        |
 
 
@@ -27,15 +27,15 @@ Correct speaker diarization errors using an LLM's understanding of conversationa
   - Names mentioned (people referring to each other)
   - Consistency of speaking style
   - Turn-taking patterns
-4. **Parse** Claude's JSON array response mapping each turn index to corrected speaker + optional name
-5. **Apply corrections** and write output in the same format as diarized JSON (compatible with segment step)
+4. **Parse** Claude's JSON array response mapping each turn index to validated speaker + optional name
+5. **Apply fixes** and write output in the same format as diarized JSON (compatible with segment step)
 6. **Log changes** with reasoning for each reassignment
 
 ## Input/Output
 
 **Input:** `output/translated/{call_id}_translated.json`
 
-**Output:** `output/corrected/{call_id}_corrected.json` — one file per recording, always.
+**Output:** `output/validated/{call_id}_validated.json` — one file per recording, always.
 
 Accepted:
 ```json
@@ -44,14 +44,14 @@ Accepted:
   "mode": "aws",
   "language": "hi-IN",
   "speaker_names": {"spk_0": "Amit", "spk_1": "Customer"},
-  "correction_confidence": 0.85,
+  "validation_confidence": 0.85,
   "turns": [
     {"speaker": "spk_0", "start": 0.0, "end": 3.2, "text": "...", "text_en": "..."}
   ]
 }
 ```
 
-Rejected (corrected turns with per-turn issues preserved):
+Rejected (validated turns with per-turn issues preserved):
 ```json
 {
   "call_id": "call_recording",
@@ -59,7 +59,7 @@ Rejected (corrected turns with per-turn issues preserved):
   "language": "hi-IN",
   "rejected": true,
   "reject_reasons": ["garbled_transcript", "incorrect_speaker_count"],
-  "correction_confidence": 0.40,
+  "validation_confidence": 0.40,
   "turns": [
     {"speaker": "spk_0", "start": 0.0, "end": 3.2, "text": "...", "issues": ["garbled_transcript"]},
     {"speaker": "spk_1", "start": 3.5, "end": 6.0, "text": "..."}
@@ -69,8 +69,8 @@ Rejected (corrected turns with per-turn issues preserved):
 
 ## Pipeline Integration
 
-- Output goes to `output/corrected/` as `*_corrected.json`
-- Step 6 (segment) reads directly from `output/corrected/`, skipping files with `"rejected": true`
+- Output goes to `output/validated/` as `*_validated.json`
+- Step 6 (segment) reads directly from `output/validated/`, skipping files with `"rejected": true`
 - Uses `text_en` (English translation) in the prompt so Claude can reason about non-English calls
 
 ## Prompt Strategy
@@ -78,7 +78,7 @@ Rejected (corrected turns with per-turn issues preserved):
 - Presents transcript as numbered lines: `[index] speaker (start - end): text`
 - Asks for JSON array with `{index, speaker, name, reasoning}` per turn
 - Rules: keep original labels where correct, identify speakers by name when possible, reflect actual number of participants
-- Same prompt template (`correction.j2`) used by both backends
+- Same prompt template (`validation.j2`) used by both backends
 - `max_tokens=8192`
 
 ### Bedrock backend
@@ -100,7 +100,7 @@ Rejected (corrected turns with per-turn issues preserved):
 | ---------------------------- | --------- | ------------------------------- |
 | `ANTHROPIC_BEDROCK_BASE_URL` | bedrock   | Bedrock gateway URL             |
 | `ANTHROPIC_AUTH_TOKEN`       | bedrock   | Auth bearer token               |
-| `CORRECTION_MODEL`           | bedrock   | Claude model ID (optional)      |
+| `VALIDATION_MODEL`           | bedrock   | Claude model ID (optional)      |
 | `NODE_EXTRA_CA_CERTS`        | bedrock   | Custom CA certs path (optional) |
 | `LLAMACPP_MODEL_PATH`        | llamacpp  | Path to GGUF model file         |
 
@@ -139,7 +139,7 @@ These appear in each turn's `"issues"` array in the output. If any turn has issu
 
 - Confidence < 0.60 (min across batches)
 
-A conversation is rejected if it has any issues (per-turn or file-level), fails a pre-LLM check, or fails confidence. Every call produces a `_corrected.json` — rejected ones have `"rejected": true`, `"reject_reasons"`, and corrected turns with per-turn `"issues"`. Files that already exist in the output directory are skipped, so interrupted runs can be resumed. The re-run script (`scripts/rerun_rejected.py`) globs `output/corrected/` and filters by `"rejected": true`; use `--reasons` to filter by specific values.
+A conversation is rejected if it has any issues (per-turn or file-level), fails a pre-LLM check, or fails confidence. Every call produces a `_validated.json` — rejected ones have `"rejected": true`, `"reject_reasons"`, and validated turns with per-turn `"issues"`. Files that already exist in the output directory are skipped, so interrupted runs can be resumed. The re-run script (`scripts/rerun_rejected.py`) globs `output/validated/` and filters by `"rejected": true`; use `--reasons` to filter by specific values.
 
 ## Key Implementation Details
 
@@ -147,5 +147,5 @@ A conversation is rejected if it has any issues (per-turn or file-level), fails 
 - Warns if number of assignments doesn't match number of turns (uses original labels for missing)
 - Per-turn changes logged at DEBUG level; summary at INFO
 - Output format is compatible with both the diarized and translated formats (has turns[] with speaker, start, end, text fields)
-- **Batching:** Transcripts are processed in batches of 80 turns (BATCH_SIZE) to stay within the `max_tokens=8192` response limit. Each batch after the first includes the last 10 corrected turns (CONTEXT_OVERLAP) as read-only context so Claude maintains speaker consistency across batch boundaries. Short calls (<= 80 turns) go through in a single request.
+- **Batching:** Transcripts are processed in batches of 80 turns (BATCH_SIZE) to stay within the `max_tokens=8192` response limit. Each batch after the first includes the last 10 validated turns (CONTEXT_OVERLAP) as read-only context so Claude maintains speaker consistency across batch boundaries. Short calls (<= 80 turns) go through in a single request.
 

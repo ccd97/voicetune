@@ -1,6 +1,6 @@
-"""LLM-based speaker correction.
+"""LLM-based speaker validation.
 
-Takes translated transcripts and uses an LLM to correct speaker
+Takes translated transcripts and uses an LLM to validate speaker
 assignments using conversational context. Diarization often
 misattributes turns — the LLM uses dialogue flow, names, and
 context to fix these errors. Supports Bedrock (Claude) and llama.cpp backends.
@@ -27,7 +27,7 @@ def _get_llm():
     from llama_cpp import Llama
 
     model_path = os.environ["LLAMACPP_MODEL_PATH"]
-    log.info(f"Loading llama.cpp model for correction: {model_path}")
+    log.info(f"Loading llama.cpp model for validation: {model_path}")
 
     _llm = Llama(
         model_path=model_path,
@@ -40,7 +40,7 @@ def _get_llm():
 
 
 class RejectReason(str, Enum):
-    """Quality issues reported by the LLM during correction."""
+    """Quality issues reported by the LLM during validation."""
     # Per-turn issues (reported on individual assignments)
     IMPROPER_DIARIZATION = "improper_diarization"
     INCORRECT_SPEAKER_ASSIGNMENT = "incorrect_speaker_assignment"
@@ -77,7 +77,7 @@ def build_prompt(turns: list[dict], offset: int = 0, context: list[dict] | None 
     Args:
         turns: The turns to correct (indices in the response will be offset-based).
         offset: Global index offset for turn numbering.
-        context: Previous turns (already corrected) included for continuity but NOT in the response.
+        context: Previous turns (already validated) included for continuity but NOT in the response.
     """
     parts = []
 
@@ -89,7 +89,7 @@ def build_prompt(turns: list[dict], offset: int = 0, context: list[dict] | None 
             context_lines.append(
                 f"[{ctx_idx}] {turn['speaker']} ({turn['start']:.1f}s - {turn['end']:.1f}s): {text}"
             )
-        parts.append("PREVIOUS CONTEXT (already corrected — do NOT include in your response):\n" + "\n".join(context_lines))
+        parts.append("PREVIOUS CONTEXT (already validated — do NOT include in your response):\n" + "\n".join(context_lines))
 
     transcript_lines = []
     for i, turn in enumerate(turns):
@@ -103,7 +103,7 @@ def build_prompt(turns: list[dict], offset: int = 0, context: list[dict] | None 
     transcript_section = "\n\n".join(parts)
 
     return prompts.render(
-        "correction.j2",
+        "validation.j2",
         transcript_section=transcript_section,
         offset=offset,
         end_index=offset + len(turns) - 1,
@@ -195,10 +195,10 @@ def process_file(input_path: Path, output_dir: Path, backend: str = "llamacpp") 
         output = dict(data)
         output["rejected"] = True
         output["reject_reasons"] = reject_reasons
-        output["correction_confidence"] = -1.0
+        output["validation_confidence"] = -1.0
 
         output_dir.mkdir(parents=True, exist_ok=True)
-        out_path = output_dir / f"{call_id}_corrected.json"
+        out_path = output_dir / f"{call_id}_validated.json"
         with open(out_path, "w") as f:
             json.dump(output, f, indent=2, ensure_ascii=False)
 
@@ -215,7 +215,7 @@ def process_file(input_path: Path, output_dir: Path, backend: str = "llamacpp") 
         import httpx
         base_url = os.environ["ANTHROPIC_BEDROCK_BASE_URL"]
         auth_token = os.environ["ANTHROPIC_AUTH_TOKEN"]
-        model = os.environ.get("CORRECTION_MODEL", "us.anthropic.claude-haiku-4-5-20251001-v1:0")
+        model = os.environ.get("VALIDATION_MODEL", "us.anthropic.claude-haiku-4-5-20251001-v1:0")
         ca_certs = os.environ.get("NODE_EXTRA_CA_CERTS", True)
         http_client = httpx.Client(verify=ca_certs)
         call_fn = lambda prompt, max_tokens=8192: _call_llm_bedrock(http_client, base_url, auth_token, model, prompt, max_tokens)
@@ -233,14 +233,14 @@ def process_file(input_path: Path, output_dir: Path, backend: str = "llamacpp") 
     all_assignments = []
     batch_confidences = []
     all_issues: list[RejectReason] = []
-    corrected_so_far = []
+    validated_so_far = []
 
     for batch_idx in range(num_batches):
         start = batch_idx * BATCH_SIZE
         end = min(start + BATCH_SIZE, len(turns))
         batch = turns[start:end]
 
-        context = corrected_so_far[-CONTEXT_OVERLAP:] if corrected_so_far else None
+        context = validated_so_far[-CONTEXT_OVERLAP:] if validated_so_far else None
         prompt = build_prompt(batch, offset=start, context=context)
 
         if num_batches > 1:
@@ -261,19 +261,18 @@ def process_file(input_path: Path, output_dir: Path, backend: str = "llamacpp") 
             batch_confidences.append(confidence)
         all_issues.extend(issues)
 
-        # Build corrected versions of this batch for context in the next batch
         batch_map = {a["index"]: a for a in batch_assignments}
         for i, turn in enumerate(batch):
             global_idx = start + i
             if global_idx in batch_map:
-                corrected = dict(turn)
-                corrected["speaker"] = batch_map[global_idx]["speaker"]
-                corrected_so_far.append(corrected)
+                validated = dict(turn)
+                validated["speaker"] = batch_map[global_idx]["speaker"]
+                validated_so_far.append(validated)
             else:
-                corrected_so_far.append(turn)
+                validated_so_far.append(turn)
 
     assignment_map = {a["index"]: a for a in all_assignments}
-    corrected_turns = []
+    validated_turns = []
     changes = 0
     speaker_names = {}
 
@@ -304,9 +303,9 @@ def process_file(input_path: Path, output_dir: Path, backend: str = "llamacpp") 
                 new_turn["issues"] = turn_issues
                 all_turn_issues.update(turn_issues)
 
-        corrected_turns.append(new_turn)
+        validated_turns.append(new_turn)
 
-    speakers = sorted(set(t["speaker"] for t in corrected_turns))
+    speakers = sorted(set(t["speaker"] for t in validated_turns))
 
     # Quality gate
     overall_confidence = min(batch_confidences) if batch_confidences else -1.0
@@ -330,11 +329,11 @@ def process_file(input_path: Path, output_dir: Path, backend: str = "llamacpp") 
         output = dict(data)
         output["rejected"] = True
         output["reject_reasons"] = all_reject_reasons
-        output["correction_confidence"] = overall_confidence
-        output["turns"] = corrected_turns
+        output["validation_confidence"] = overall_confidence
+        output["turns"] = validated_turns
 
         output_dir.mkdir(parents=True, exist_ok=True)
-        out_path = output_dir / f"{call_id}_corrected.json"
+        out_path = output_dir / f"{call_id}_validated.json"
         with open(out_path, "w") as f:
             json.dump(output, f, indent=2, ensure_ascii=False)
         log.info(f"  Saved to {out_path}")
@@ -344,7 +343,7 @@ def process_file(input_path: Path, output_dir: Path, backend: str = "llamacpp") 
             "call_id": call_id,
             "reasons": all_reject_reasons,
             "confidence": overall_confidence,
-            "num_turns": len(corrected_turns),
+            "num_turns": len(validated_turns),
             "num_speakers": len(speakers),
         }
 
@@ -355,12 +354,12 @@ def process_file(input_path: Path, output_dir: Path, backend: str = "llamacpp") 
         "language": data.get("language", "unknown"),
         "num_speakers": num_speakers,
         "speaker_names": speaker_names,
-        "correction_confidence": overall_confidence,
-        "turns": corrected_turns,
+        "validation_confidence": overall_confidence,
+        "turns": validated_turns,
     }
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    out_path = output_dir / f"{call_id}_corrected.json"
+    out_path = output_dir / f"{call_id}_validated.json"
     with open(out_path, "w") as f:
         json.dump(output, f, indent=2, ensure_ascii=False)
 

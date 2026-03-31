@@ -1,4 +1,4 @@
-"""CLI entry point: python -m voicetune.stages.correction"""
+"""CLI entry point: python -m voicetune.stages.validation"""
 
 import argparse
 import logging
@@ -18,7 +18,7 @@ def main():
     setup_logging()
 
     parser = argparse.ArgumentParser(
-        description="Claude-based speaker correction using translated transcripts"
+        description="Claude-based speaker validation using translated transcripts"
     )
     parser.add_argument(
         "--run-dir", type=Path, default=Path("./output"),
@@ -30,18 +30,18 @@ def main():
     )
     parser.add_argument(
         "--output-dir", type=Path, default=None,
-        help="Output directory for corrected diarization (default: <run-dir>/corrected)"
+        help="Output directory for validated diarization (default: <run-dir>/validated)"
     )
     parser.add_argument(
         "--backend", choices=["bedrock", "llamacpp"], default="llamacpp",
-        help="Correction backend (default: llamacpp)"
+        help="Validation backend (default: llamacpp)"
     )
     args = parser.parse_args()
 
     if args.input_dir is None:
         args.input_dir = args.run_dir / "translated"
     if args.output_dir is None:
-        args.output_dir = args.run_dir / "corrected"
+        args.output_dir = args.run_dir / "validated"
 
     translated_files = sorted(args.input_dir.glob("*_translated.json"))
     if not translated_files:
@@ -56,7 +56,7 @@ def main():
     failed = []
     rejections = []
     for path in translated_files:
-        out_name = path.name.replace("_translated.json", "_corrected.json")
+        out_name = path.name.replace("_translated.json", "_validated.json")
         if (args.output_dir / out_name).exists():
             skipped += 1
             continue
@@ -79,7 +79,7 @@ def main():
             failed.append(path.name)
 
     if skipped:
-        log.info(f"Skipped {skipped} already-corrected file(s)")
+        log.info(f"Skipped {skipped} already-validated file(s)")
     log.info(f"Summary: {succeeded} succeeded, {len(failed)} failed")
     if failed:
         log.info(f"Failed: {', '.join(failed)}")

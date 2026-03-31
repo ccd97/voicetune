@@ -1,4 +1,4 @@
-"""One-click pipeline: preprocess → diarize → scrub → translate → correction → segment → label → export → finetune."""
+"""One-click pipeline: preprocess → diarize → scrub → translate → validation → segment → label → export → finetune."""
 
 import argparse
 import json
@@ -17,14 +17,14 @@ STEPS = [
     "diarize",        # 2
     "scrub",          # 3
     "translate",      # 4
-    "correction",     # 5
+    "validation",     # 5
     "segment",        # 6
     "label",          # 7
     "export",         # 8
     "finetune",       # 9
 ]
 
-OPTIONAL_STEPS = {"scrub", "translate", "correction"}
+OPTIONAL_STEPS = {"scrub", "translate", "validation"}
 
 
 class Manifest:
@@ -75,8 +75,8 @@ def get_skip_steps() -> set[str]:
     for step in OPTIONAL_STEPS:
         if os.environ.get(f"SKIP_{step.upper()}", "").lower() in ("1", "true", "yes"):
             skipped.add(step)
-    if "translate" in skipped and "correction" not in skipped:
-        raise ValueError("Cannot skip translate without also skipping correction (correction reads translate output)")
+    if "translate" in skipped and "validation" not in skipped:
+        raise ValueError("Cannot skip translate without also skipping validation (validation reads translate output)")
     return skipped
 
 
@@ -240,8 +240,8 @@ def main():
         help="Translation backend (default: llamacpp)"
     )
     parser.add_argument(
-        "--correction-backend", choices=["bedrock", "llamacpp"], default="llamacpp",
-        help="Correction backend (default: llamacpp)"
+        "--validation-backend", choices=["bedrock", "llamacpp"], default="llamacpp",
+        help="Validation backend (default: llamacpp)"
     )
     parser.add_argument(
         "--resume", action="store_true",
@@ -321,8 +321,8 @@ def main():
             translate_args += ["--input-dir", str(scrubbed_dir)]
         timings["translate"] = run_step("translate", translate_args, **step_kw)
 
-    if "correction" in steps_to_run:
-        timings["correction"] = run_step("correction", ["--backend", args.correction_backend], **step_kw)
+    if "validation" in steps_to_run:
+        timings["validation"] = run_step("validation", ["--backend", args.validation_backend], **step_kw)
 
     if "segment" in steps_to_run:
         timings["segment"] = run_step("segment", [], **step_kw)
