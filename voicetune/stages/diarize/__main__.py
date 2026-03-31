@@ -5,7 +5,7 @@ import logging
 import warnings
 from pathlib import Path
 
-from .utils import find_preprocessed_wavs
+from .pipeline import find_preprocessed_wavs, process_file
 
 warnings.filterwarnings("ignore", category=UserWarning, module="pyannote")
 
@@ -62,24 +62,12 @@ def main():
     log.info(f"Found {len(wav_files)} file(s), mode: {args.mode}")
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Lazy import to avoid loading heavy deps for unused backends
-    if args.mode == "aws":
-        from .aws import diarize
-    elif args.mode == "whisperx":
-        from .whisperx_backend import diarize
-    elif args.mode == "whispermlx":
-        from .whispermlx_backend import diarize
-    elif args.mode == "llamacpp":
-        from .llamacpp_backend import diarize
-    else:
-        from .mlx_backend import diarize
-
     succeeded = 0
     failed = []
 
     for wav in wav_files:
         try:
-            result = diarize(wav, args.output_dir, args.num_speakers, args.language)
+            result = process_file(wav, args.output_dir, args.mode, args.num_speakers, args.language)
             n_turns = len(result["turns"])
             speakers = set(t["speaker"] for t in result["turns"])
             log.info(f"  {wav.parent.name}: {n_turns} turns, {len(speakers)} speakers")

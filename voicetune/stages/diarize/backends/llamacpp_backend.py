@@ -17,7 +17,7 @@ from pathlib import Path
 
 from voicetune import prompts
 
-from .utils import get_call_id, save_result
+from voicetune.common import get_call_id
 
 log = logging.getLogger(__name__)
 
@@ -96,7 +96,7 @@ def _parse_turns(text: str) -> list[dict]:
     return []
 
 
-def diarize(audio_path: Path, output_dir: Path, num_speakers: int | None = None, language: str | None = None) -> dict:
+def diarize(audio_path: Path, num_speakers: int | None = None, language: str | None = None) -> dict:
     llm = _get_llm()
 
     log.info(f"Transcribing + diarizing with llama.cpp: {audio_path.name}")
@@ -135,5 +135,4 @@ def diarize(audio_path: Path, output_dir: Path, num_speakers: int | None = None,
         "turns": turns,
     }
 
-    save_result(output, output_dir)
     return output

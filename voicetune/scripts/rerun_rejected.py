@@ -62,15 +62,9 @@ def main():
     for r in rejections:
         log.info(f"  {r['call_id']}: {', '.join(r['reasons'])} (confidence: {r['confidence']:.2f})")
 
+    from voicetune.stages.diarize.pipeline import process_file as diarize_file
     from voicetune.stages.scrub.pipeline import process_file as scrub_file
     SCRUB_DIR.mkdir(parents=True, exist_ok=True)
-
-    if args.mode == "aws":
-        from voicetune.stages.diarize.aws import diarize
-    elif args.mode == "whisperx":
-        from voicetune.stages.diarize.whisperx_backend import diarize
-    else:
-        from voicetune.stages.diarize.mlx_backend import diarize
 
     failed = []
     for r in rejections:
@@ -84,7 +78,7 @@ def main():
         lang_str = f", language={args.language}" if args.language else ""
         log.info(f"Re-running {call_id}{lang_str}")
         try:
-            result = diarize(wav, OUTPUT_DIR, args.num_speakers, args.language)
+            result = diarize_file(wav, OUTPUT_DIR, args.mode, args.num_speakers, args.language)
             log.info(f"  {len(result['turns'])} turns, {len(set(t['speaker'] for t in result['turns']))} speakers")
             diarized_path = OUTPUT_DIR / f"{result['call_id']}_diarized.json"
             scrub_file(diarized_path, SCRUB_DIR)

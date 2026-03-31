@@ -8,12 +8,25 @@ import urllib.request
 import uuid
 from pathlib import Path
 
-from .utils import get_call_id, join_words, save_result
+from voicetune.common import get_call_id
 
 log = logging.getLogger(__name__)
 
 
-def diarize(audio_path: Path, output_dir: Path, num_speakers: int | None = None, language: str | None = None) -> dict:
+def _join_words(words: list[str]) -> str:
+    """Join words, attaching punctuation to the preceding word."""
+    if not words:
+        return ""
+    result = words[0]
+    for w in words[1:]:
+        if w in ".,!?;:'\")-":
+            result += w
+        else:
+            result += " " + w
+    return result
+
+
+def diarize(audio_path: Path, num_speakers: int | None = None, language: str | None = None) -> dict:
     """Run diarization + transcription via AWS Transcribe.
 
     Language is auto-detected between English, Hindi, and Marathi unless overridden.
@@ -90,7 +103,6 @@ def diarize(audio_path: Path, output_dir: Path, num_speakers: int | None = None,
         "turns": turns,
     }
 
-    save_result(result, output_dir)
     return result
 
 
@@ -127,7 +139,7 @@ def _parse_result(raw: dict) -> list[dict]:
                 "speaker": current_speaker,
                 "start": float(current_start),
                 "end": float(current_end),
-                "text": join_words(current_words),
+                "text": _join_words(current_words),
             })
             current_words = []
             current_start = None
@@ -143,7 +155,7 @@ def _parse_result(raw: dict) -> list[dict]:
             "speaker": current_speaker,
             "start": float(current_start),
             "end": float(current_end),
-            "text": join_words(current_words),
+            "text": _join_words(current_words),
         })
 
     return turns

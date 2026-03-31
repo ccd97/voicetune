@@ -1,21 +1,10 @@
-"""Shared utilities for diarization backends."""
+"""Diarization pipeline: backend dispatch and result persistence."""
 
 import json
 import logging
 from pathlib import Path
 
 log = logging.getLogger(__name__)
-
-
-def get_call_id(audio_path: Path) -> str:
-    """Derive a call ID from the audio path.
-
-    If the file is .../call_recording/full_normalized.wav, returns 'call_recording'.
-    Otherwise falls back to the file stem.
-    """
-    if audio_path.name == "full_normalized.wav":
-        return audio_path.parent.name
-    return audio_path.stem
 
 
 def find_preprocessed_wavs(input_dir: Path) -> list[Path]:
@@ -35,14 +24,19 @@ def save_result(result: dict, output_dir: Path) -> Path:
     return out_path
 
 
-def join_words(words: list[str]) -> str:
-    """Join words, attaching punctuation to the preceding word."""
-    if not words:
-        return ""
-    result = words[0]
-    for w in words[1:]:
-        if w in ".,!?;:'\")-":
-            result += w
-        else:
-            result += " " + w
+def process_file(audio_path: Path, output_dir: Path, mode: str,
+                 num_speakers: int | None = None, language: str | None = None) -> dict:
+    if mode == "aws":
+        from .backends.aws import diarize
+    elif mode == "whisperx":
+        from .backends.whisperx_backend import diarize
+    elif mode == "whispermlx":
+        from .backends.whispermlx_backend import diarize
+    elif mode == "llamacpp":
+        from .backends.llamacpp_backend import diarize
+    else:
+        from .backends.mlx_backend import diarize
+
+    result = diarize(audio_path, num_speakers, language)
+    save_result(result, output_dir)
     return result

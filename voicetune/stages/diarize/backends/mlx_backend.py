@@ -16,12 +16,12 @@ import numpy as np
 
 from voicetune.common import merge_segments_to_turns
 
-from .utils import get_call_id, save_result
+from voicetune.common import get_call_id
 
 log = logging.getLogger(__name__)
 
 
-def diarize(audio_path: Path, output_dir: Path, num_speakers: int | None = None, language: str | None = None) -> dict:
+def diarize(audio_path: Path, num_speakers: int | None = None, language: str | None = None) -> dict:
     """Run transcription via mlx-whisper + diarization via pyannote."""
     import mlx_whisper
     import torch
@@ -106,7 +106,6 @@ def diarize(audio_path: Path, output_dir: Path, num_speakers: int | None = None,
         "turns": turns,
     }
 
-    save_result(output, output_dir)
     return output
 
 

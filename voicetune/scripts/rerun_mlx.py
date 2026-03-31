@@ -40,7 +40,7 @@ def find_matching_calls(substrings: list[str]) -> list[Path]:
 
 
 def main():
-    from voicetune.stages.diarize.mlx_backend import diarize
+    from voicetune.stages.diarize.pipeline import process_file as diarize_file
     from voicetune.stages.scrub.pipeline import process_file as scrub_file
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -58,7 +58,7 @@ def main():
         call_id = wav.parent.name
         log.info(f"Processing {call_id} (language={LANGUAGE})")
         try:
-            result = diarize(wav, OUTPUT_DIR, language=LANGUAGE)
+            result = diarize_file(wav, OUTPUT_DIR, "mlx", language=LANGUAGE)
             log.info(f"  {len(result['turns'])} turns, {len(set(t['speaker'] for t in result['turns']))} speakers")
             diarized_path = OUTPUT_DIR / f"{result['call_id']}_diarized.json"
             scrub_file(diarized_path, SCRUB_DIR)

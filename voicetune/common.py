@@ -69,3 +69,14 @@ def merge_segments_to_turns(segments: list[dict]) -> list[dict]:
         })
 
     return turns
+
+
+def get_call_id(audio_path: Path) -> str:
+    """Derive a call ID from the audio path.
+
+    If the file is .../call_recording/full_normalized.wav, returns 'call_recording'.
+    Otherwise falls back to the file stem.
+    """
+    if audio_path.name == "full_normalized.wav":
+        return audio_path.parent.name
+    return audio_path.stem
