@@ -45,27 +45,15 @@ def cut_turn_audio(audio: np.ndarray, sr: int, start: float, end: float) -> np.n
     return audio[start_sample:end_sample]
 
 
-def quality_flags(turn_audio: np.ndarray, sr: int, duration: float) -> list[str]:
-    """Return a list of quality issue flags for a turn. Empty = good."""
-    flags = []
-
-    if duration < 0.5:
-        flags.append("too_short")
-
-    if duration > 60.0:
-        flags.append("too_long")
-
-    # Check if mostly silence (RMS below -40 dB)
+def audio_quality_check(turn_audio: np.ndarray) -> str | None:
+    """Return a quality issue if audio fails checks, or None if OK."""
     rms = np.sqrt(np.mean(turn_audio ** 2)) + 1e-10
     rms_db = 20 * np.log10(rms)
     if rms_db < -40.0:
-        flags.append("mostly_silence")
-
-    # Low energy (speech likely very quiet or distant)
-    if rms_db < -30.0 and "mostly_silence" not in flags:
-        flags.append("low_energy")
-
-    return flags
+        return "mostly_silence"
+    if rms_db < -30.0:
+        return "low_energy"
+    return None
 
 
 def find_audio_for_call(call_id: str, audio_dir: Path) -> Path | None:
@@ -111,30 +99,31 @@ def process_file(diarized_path: Path, audio_dir: Path, output_dir: Path, merge_g
     turns_dir = call_output_dir / "turns"
     turns_dir.mkdir(exist_ok=True)
 
-    # Cut per-turn audio and build final turns list
     output_turns = []
-    flagged_count = 0
-    for i, turn in enumerate(merged):
+    dropped_count = 0
+    turn_num = 0
+    for turn in merged:
         turn_audio = cut_turn_audio(audio, sr, turn["start"], turn["end"])
-        turn_filename = f"turn_{i+1:03d}_{turn['speaker']}.wav"
-        turn_path = turns_dir / turn_filename
 
+        issue = audio_quality_check(turn_audio)
+        if issue:
+            dropped_count += 1
+            log.debug(f"  Dropping turn at {turn['start']:.1f}s-{turn['end']:.1f}s ({issue})")
+            continue
+
+        turn_num += 1
+        turn_filename = f"turn_{turn_num:03d}_{turn['speaker']}.wav"
+        turn_path = turns_dir / turn_filename
         write_wav(turn_path, turn_audio, sr)
 
-        duration = round(turn["end"] - turn["start"], 3)
-        flags = quality_flags(turn_audio, sr, duration)
-        if flags:
-            flagged_count += 1
-
         output_turns.append({
-            "turn": i + 1,
+            "turn": turn_num,
             "speaker": turn["speaker"],
             "start": round(turn["start"], 3),
             "end": round(turn["end"], 3),
-            "duration": duration,
+            "duration": round(turn["end"] - turn["start"], 3),
             "audio_path": f"turns/{turn_filename}",
             "text": turn["text"],
-            "quality_flags": flags,
         })
 
     speakers = sorted(set(t["speaker"] for t in output_turns))
@@ -153,5 +142,5 @@ def process_file(diarized_path: Path, audio_dir: Path, output_dir: Path, merge_g
     with open(out_path, "w") as f:
         json.dump(result, f, indent=2, ensure_ascii=False)
 
-    log.info(f"  Output: {len(output_turns)} turns, {len(speakers)} speakers, {flagged_count} flagged -> {call_output_dir.name}/")
+    log.info(f"  Output: {len(output_turns)} turns, {len(speakers)} speakers, {dropped_count} dropped -> {call_output_dir.name}/")
     return result

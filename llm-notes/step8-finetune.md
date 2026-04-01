@@ -1,4 +1,4 @@
-# Step 10: Finetune (Cloud GPU)
+# Step 8: Finetune (Cloud GPU)
 
 ## Purpose
 
@@ -55,7 +55,7 @@ Status is reported to `{bucket}/status.txt` at each phase: STARTING → DRIVERS_
 
 ## Input/Output
 
-**Input:** `output/fish-speech/data/me/*.wav` + `*.lab` (from export step)
+**Input:** `output/fish-speech/data/me/*.wav` + `*.lab` (from label step with `--prepare`)
 
 **Output:** `output/finetune/s2-pro-finetuned/` — merged Fish Speech model weights
 

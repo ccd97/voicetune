@@ -1,4 +1,4 @@
-"""One-click pipeline: preprocess → diarize → scrub → translate → validation → segment → label → export → finetune."""
+"""One-click pipeline: preprocess → diarize → scrub → validation → filter → segment → label → finetune."""
 
 import argparse
 import json
@@ -16,15 +16,14 @@ STEPS = [
     "preprocess",     # 1
     "diarize",        # 2
     "scrub",          # 3
-    "translate",      # 4
-    "validation",     # 5
+    "validation",     # 4
+    "filter",         # 5
     "segment",        # 6
     "label",          # 7
-    "export",         # 8
-    "finetune",       # 9
+    "finetune",       # 8
 ]
 
-OPTIONAL_STEPS = {"scrub", "translate", "validation"}
+OPTIONAL_STEPS = {"scrub", "validation"}
 
 
 class Manifest:
@@ -75,8 +74,6 @@ def get_skip_steps() -> set[str]:
     for step in OPTIONAL_STEPS:
         if os.environ.get(f"SKIP_{step.upper()}", "").lower() in ("1", "true", "yes"):
             skipped.add(step)
-    if "translate" in skipped and "validation" not in skipped:
-        raise ValueError("Cannot skip translate without also skipping validation (validation reads translate output)")
     return skipped
 
 
@@ -236,10 +233,6 @@ def main():
         help="Cloud provider for fine-tuning (default: gcp)"
     )
     parser.add_argument(
-        "--translate-backend", choices=["bedrock", "llamacpp"], default="llamacpp",
-        help="Translation backend (default: llamacpp)"
-    )
-    parser.add_argument(
         "--validation-backend", choices=["bedrock", "llamacpp"], default="llamacpp",
         help="Validation backend (default: llamacpp)"
     )
@@ -314,15 +307,15 @@ def main():
     if "scrub" in steps_to_run:
         timings["scrub"] = run_step("scrub", [], **step_kw)
 
-    if "translate" in steps_to_run:
-        translate_args = ["--backend", args.translate_backend]
+    if "validation" in steps_to_run:
+        validation_args = ["--backend", args.validation_backend]
         scrubbed_dir = run_dir / "scrubbed"
         if "scrub" in steps_to_run and scrubbed_dir.exists() and any(scrubbed_dir.glob("*_diarized.json")):
-            translate_args += ["--input-dir", str(scrubbed_dir)]
-        timings["translate"] = run_step("translate", translate_args, **step_kw)
+            validation_args += ["--input-dir", str(scrubbed_dir)]
+        timings["validation"] = run_step("validation", validation_args, **step_kw)
 
-    if "validation" in steps_to_run:
-        timings["validation"] = run_step("validation", ["--backend", args.validation_backend], **step_kw)
+    if "filter" in steps_to_run:
+        timings["filter"] = run_step("filter", [], **step_kw)
 
     if "segment" in steps_to_run:
         timings["segment"] = run_step("segment", [], **step_kw)
@@ -349,10 +342,7 @@ def main():
                 **step_kw,
             )
 
-        timings["label"] = run_step("label", ["label"], **step_kw)
-
-    if "export" in steps_to_run:
-        timings["export"] = run_step("export", [], **step_kw)
+        timings["label"] = run_step("label", ["label", "--prepare"], **step_kw)
 
     if "finetune" in steps_to_run:
         finetune_args = ["--provider", args.finetune_provider]

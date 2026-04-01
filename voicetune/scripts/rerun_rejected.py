@@ -25,7 +25,6 @@ log = logging.getLogger(__name__)
 INPUT_DIR = Path("./output/preprocessed")
 OUTPUT_DIR = Path("./output/diarized")
 SCRUB_DIR = Path("./output/scrubbed")
-TRANSLATED_DIR = Path("./output/translated")
 VALIDATED_DIR = Path("./output/validated")
 
 BACKENDS = ["aws", "whisperx", "mlx"]
@@ -81,13 +80,10 @@ def main():
             failed.append(call_id)
             continue
 
-        for stale in [
-            args.validated_dir / f"{call_id}_validated.json",
-            TRANSLATED_DIR / f"{call_id}_translated.json",
-        ]:
-            if stale.exists():
-                stale.unlink()
-                log.info(f"  Deleted stale {stale}")
+        stale = args.validated_dir / f"{call_id}_validated.json"
+        if stale.exists():
+            stale.unlink()
+            log.info(f"  Deleted stale {stale}")
 
         lang_str = f", language={args.language}" if args.language else ""
         log.info(f"Re-running {call_id}{lang_str}")

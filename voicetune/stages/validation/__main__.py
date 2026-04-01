@@ -18,7 +18,7 @@ def main():
     setup_logging()
 
     parser = argparse.ArgumentParser(
-        description="Claude-based speaker validation using translated transcripts"
+        description="LLM-based speaker validation using diarized transcripts"
     )
     parser.add_argument(
         "--run-dir", type=Path, default=Path("./output"),
@@ -26,7 +26,7 @@ def main():
     )
     parser.add_argument(
         "--input-dir", type=Path, default=None,
-        help="Directory containing translated JSON files (default: <run-dir>/translated)"
+        help="Directory containing diarized JSON files (default: <run-dir>/diarized)"
     )
     parser.add_argument(
         "--output-dir", type=Path, default=None,
@@ -39,24 +39,24 @@ def main():
     args = parser.parse_args()
 
     if args.input_dir is None:
-        args.input_dir = args.run_dir / "translated"
+        args.input_dir = args.run_dir / "diarized"
     if args.output_dir is None:
         args.output_dir = args.run_dir / "validated"
 
-    translated_files = sorted(args.input_dir.glob("*_translated.json"))
-    if not translated_files:
-        log.error(f"No translated JSON files found in {args.input_dir}")
+    diarized_files = sorted(args.input_dir.glob("*_diarized.json"))
+    if not diarized_files:
+        log.error(f"No diarized JSON files found in {args.input_dir}")
         return
 
-    log.info(f"Found {len(translated_files)} translated file(s)")
+    log.info(f"Found {len(diarized_files)} diarized file(s)")
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     succeeded = 0
     skipped = 0
     failed = []
     rejections = []
-    for path in translated_files:
-        out_name = path.name.replace("_translated.json", "_validated.json")
+    for path in diarized_files:
+        out_name = path.name.replace("_diarized.json", "_validated.json")
         if (args.output_dir / out_name).exists():
             skipped += 1
             continue
@@ -85,7 +85,7 @@ def main():
         log.info(f"Failed: {', '.join(failed)}")
 
     if rejections:
-        log.info(f"Rejected {len(rejections)}/{len(translated_files)} conversation(s)")
+        log.info(f"Rejected {len(rejections)}/{len(diarized_files)} conversation(s)")
 
 
 if __name__ == "__main__":

@@ -1,10 +1,11 @@
 """CLI entry point: python -m voicetune.stages.label"""
 
 import argparse
+import json
 import logging
 from pathlib import Path
 
-from .pipeline import analyze_speakers, apply_labels, enroll
+from .pipeline import analyze_speakers, apply_labels, enroll, prepare_dataset
 
 log = logging.getLogger(__name__)
 
@@ -88,6 +89,22 @@ def main():
         "--auto-skip", action="store_true",
         help="Automatically skip low-confidence matches instead of prompting"
     )
+    label_parser.add_argument(
+        "--prepare", action="store_true",
+        help="Also prepare dataset after labeling (export 'me' turns as .wav + .lab)"
+    )
+    label_parser.add_argument(
+        "--dataset-dir", type=Path, default=None,
+        help="Output directory for .wav + .lab pairs (default: <run-dir>/fish-speech/data/me)"
+    )
+    label_parser.add_argument(
+        "--min-duration", type=float, default=1.0,
+        help="Skip turns shorter than this (seconds, default: 1.0)"
+    )
+    label_parser.add_argument(
+        "--max-duration", type=float, default=60.0,
+        help="Skip turns longer than this (seconds, default: 60.0)"
+    )
 
     args = parser.parse_args()
 
@@ -117,6 +134,7 @@ def main():
             return
 
         log.info(f"Labeling {len(call_ids)} call(s)")
+        labeled_ids = []
         skipped = 0
         for call_id in call_ids:
             log.info(f"Processing {call_id}")
@@ -131,8 +149,30 @@ def main():
                 me_speaker = analysis["best_match"]
 
             apply_labels(args.input_dir, analysis, me_speaker)
+            labeled_ids.append(call_id)
 
-        log.info(f"Done ({skipped} skipped)" if skipped else "Done")
+        log.info(f"Labeled {len(labeled_ids)} call(s)" + (f", {skipped} skipped" if skipped else ""))
+
+        if args.prepare and labeled_ids:
+            dataset_dir = args.dataset_dir or args.run_dir / "fish-speech" / "data" / "me"
+            dataset_dir.mkdir(parents=True, exist_ok=True)
+            log.info(f"Preparing dataset -> {dataset_dir}")
+            total_exported = 0
+            all_stats = []
+            for call_id in labeled_ids:
+                stats = prepare_dataset(
+                    args.input_dir, call_id, dataset_dir,
+                    min_duration=args.min_duration,
+                    max_duration=args.max_duration,
+                )
+                total_exported += stats["exported"]
+                all_stats.append(stats)
+
+            summary = {"total_exported": total_exported, "output_dir": str(dataset_dir), "calls": all_stats}
+            summary_path = dataset_dir.parent / "export_summary.json"
+            with open(summary_path, "w") as f:
+                json.dump(summary, f, indent=2)
+            log.info(f"Total: {total_exported} utterances exported to {dataset_dir}")
 
 
 if __name__ == "__main__":

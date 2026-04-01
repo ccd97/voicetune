@@ -1,4 +1,4 @@
-# Step 5: Validation (LLM-based Speaker Validation)
+# Step 4: Validation (LLM-based Speaker Validation)
 
 ## Purpose
 
@@ -13,27 +13,27 @@ Validate and fix speaker diarization errors using an LLM's understanding of conv
 
 | Flag           | Default               | Description                             |
 | -------------- | --------------------- | --------------------------------------- |
-| `--input-dir`  | `./output/translated` | Directory with translated JSON files    |
+| `--input-dir`  | `./output/diarized`   | Directory with diarized JSON files      |
 | `--output-dir` | `./output/validated`  | Output directory for validated files    |
 | `--backend`    | `llamacpp`            | Backend: `bedrock` or `llamacpp`        |
 
 
 ## What It Does
 
-1. **Read** each `*_translated.json` from the translated output
-2. **Build a prompt** showing Claude the full transcript with turn indices, speaker labels, and timestamps
-3. **Ask Claude** to review and correct speaker assignments based on:
+1. **Read** each `*_diarized.json` from the diarized (or scrubbed) output
+2. **Build a prompt** showing the LLM the full transcript with turn indices, speaker labels, and timestamps
+3. **Ask the LLM** to review and correct speaker assignments based on:
   - Conversational flow (who responds to whom)
   - Names mentioned (people referring to each other)
   - Consistency of speaking style
   - Turn-taking patterns
-4. **Parse** Claude's JSON array response mapping each turn index to validated speaker + optional name
+4. **Parse** the JSON array response mapping each turn index to validated speaker + optional name
 5. **Apply fixes** and write output in the same format as diarized JSON (compatible with segment step)
 6. **Log changes** with reasoning for each reassignment
 
 ## Input/Output
 
-**Input:** `output/translated/{call_id}_translated.json`
+**Input:** `output/diarized/{call_id}_diarized.json` (or `output/scrubbed/` if the scrub step ran)
 
 **Output:** `output/validated/{call_id}_validated.json` — one file per recording, always.
 
@@ -46,19 +46,19 @@ Accepted:
   "speaker_names": {"spk_0": "Amit", "spk_1": "Customer"},
   "validation_confidence": 0.85,
   "turns": [
-    {"speaker": "spk_0", "start": 0.0, "end": 3.2, "text": "...", "text_en": "..."}
+    {"speaker": "spk_0", "start": 0.0, "end": 3.2, "text": "..."}
   ]
 }
 ```
 
-Rejected (validated turns with per-turn issues preserved):
+Rejected (file-level issue — per-turn issues preserved but don't cause rejection):
 ```json
 {
   "call_id": "call_recording",
   "mode": "aws",
   "language": "hi-IN",
   "rejected": true,
-  "reject_reasons": ["garbled_transcript", "incorrect_speaker_count"],
+  "reject_reasons": ["incorrect_speaker_count"],
   "validation_confidence": 0.40,
   "turns": [
     {"speaker": "spk_0", "start": 0.0, "end": 3.2, "text": "...", "issues": ["garbled_transcript"]},
@@ -67,11 +67,24 @@ Rejected (validated turns with per-turn issues preserved):
 }
 ```
 
+Non-rejected with per-turn issues (filter step will remove flagged turns):
+```json
+{
+  "call_id": "call_recording_2",
+  "mode": "aws",
+  "language": "en-US",
+  "validation_confidence": 0.85,
+  "turns": [
+    {"speaker": "spk_0", "start": 0.0, "end": 0.3, "text": "Hi", "issues": ["too_short"]},
+    {"speaker": "spk_1", "start": 0.5, "end": 3.2, "text": "Hello, how can I help?"}
+  ]
+}
+```
+
 ## Pipeline Integration
 
 - Output goes to `output/validated/` as `*_validated.json`
-- Step 6 (segment) reads directly from `output/validated/`, skipping files with `"rejected": true`
-- Uses `text_en` (English translation) in the prompt so Claude can reason about non-English calls
+- Step 5 (filter) reads from `output/validated/`, removing flagged turns and rejecting files with file-level issues
 
 ## Prompt Strategy
 
@@ -110,7 +123,7 @@ Rejected (validated turns with per-turn issues preserved):
 
 ## Quality Gate
 
-Claude returns a confidence score (0.0–1.0) and an `issues` array alongside each batch. The response format is: `{"confidence": 0.85, "issues": [], "assignments": [...]}`.
+The LLM returns a confidence score (0.0–1.0) and an `issues` array alongside each batch. The response format is: `{"confidence": 0.85, "issues": [], "assignments": [...]}`.
 
 ### Per-turn issues (on each assignment)
 
@@ -119,8 +132,10 @@ Claude returns a confidence score (0.0–1.0) and an `issues` array alongside ea
 | `improper_diarization` | This turn's speaker boundary is wrong (split mid-sentence, overlap misattributed) |
 | `incorrect_speaker_assignment` | This turn is attributed to the wrong speaker |
 | `garbled_transcript` | This turn's text is unintelligible or full of ASR errors |
+| `too_short` | Turn duration < 0.5s (timing check, not from LLM) |
+| `too_long` | Turn duration > 60s (timing check, not from LLM) |
 
-These appear in each turn's `"issues"` array in the output. If any turn has issues, the whole file is rejected.
+These appear in each turn's `"issues"` array in the output. Per-turn issues do **not** cause file rejection — the filter step (step 5) handles turn removal based on these codes.
 
 ### File-level issues (top-level "issues")
 
@@ -139,13 +154,12 @@ These appear in each turn's `"issues"` array in the output. If any turn has issu
 
 - Confidence < 0.60 (min across batches)
 
-A conversation is rejected if it has any issues (per-turn or file-level), fails a pre-LLM check, or fails confidence. Every call produces a `_validated.json` — rejected ones have `"rejected": true`, `"reject_reasons"`, and validated turns with per-turn `"issues"`. Files that already exist in the output directory are skipped, so interrupted runs can be resumed. The re-run script (`scripts/rerun_rejected.py`) globs `output/validated/` and filters by `"rejected": true`; use `--reasons` to filter by specific values.
+A conversation is rejected only for file-level issues, pre-LLM check failures, or low confidence. Per-turn issues are preserved on individual turns but do **not** trigger file rejection — the filter step removes those turns instead. Every call produces a `_validated.json` — rejected ones have `"rejected": true`, `"reject_reasons"`, and validated turns with per-turn `"issues"`. Files that already exist in the output directory are skipped, so interrupted runs can be resumed. The re-run script (`scripts/rerun_rejected.py`) globs `output/validated/` and filters by `"rejected": true`; use `--reasons` to filter by specific values.
 
 ## Key Implementation Details
 
 - Response parsing finds JSON object/array boundaries in the LLM response
 - Warns if number of assignments doesn't match number of turns (uses original labels for missing)
 - Per-turn changes logged at DEBUG level; summary at INFO
-- Output format is compatible with both the diarized and translated formats (has turns[] with speaker, start, end, text fields)
-- **Batching:** Transcripts are processed in batches of 80 turns (BATCH_SIZE) to stay within the `max_tokens=8192` response limit. Each batch after the first includes the last 10 validated turns (CONTEXT_OVERLAP) as read-only context so Claude maintains speaker consistency across batch boundaries. Short calls (<= 80 turns) go through in a single request.
-
+- Output format is compatible with the diarized format (has turns[] with speaker, start, end, text fields)
+- **Batching:** Transcripts are processed in batches of 80 turns (BATCH_SIZE) to stay within the `max_tokens=8192` response limit. Each batch after the first includes the last 10 validated turns (CONTEXT_OVERLAP) as read-only context so the LLM maintains speaker consistency across batch boundaries. Short calls (<= 80 turns) go through in a single request.

@@ -1,11 +1,14 @@
 """Speaker labeling pipeline.
 
 Uses resemblyzer to extract speaker embeddings and match against a
-reference voiceprint to label speakers as 'me' vs 'other'.
+reference voiceprint to label speakers as 'me' vs 'other'. After
+labeling, prepares the fine-tuning dataset by exporting 'me' turns
+as .wav + .lab pairs.
 """
 
 import json
 import logging
+import shutil
 from pathlib import Path
 
 import numpy as np
@@ -176,3 +179,63 @@ def apply_labels(segmented_dir: Path, analysis: dict, me_speaker: str) -> dict:
 
     log.info(f"  Updated {dialogue_path}")
     return dialogue
+
+
+MIN_EXPORT_DURATION = 1.0
+MAX_EXPORT_DURATION = 60.0
+
+
+def prepare_dataset(
+    segmented_dir: Path,
+    call_id: str,
+    output_dir: Path,
+    min_duration: float = MIN_EXPORT_DURATION,
+    max_duration: float = MAX_EXPORT_DURATION,
+) -> dict:
+    """Export 'me' turns from a labeled call as .wav + .lab pairs."""
+    call_dir = segmented_dir / call_id
+    dialogue_path = call_dir / "dialogue.json"
+
+    with open(dialogue_path) as f:
+        dialogue = json.load(f)
+
+    exported = 0
+    skipped_short = 0
+    skipped_long = 0
+    skipped_other = 0
+
+    for turn in dialogue["turns"]:
+        if turn.get("speaker_label") != "me":
+            skipped_other += 1
+            continue
+
+        duration = turn["duration"]
+        if duration < min_duration:
+            skipped_short += 1
+            continue
+        if duration > max_duration:
+            skipped_long += 1
+            continue
+
+        src_audio = call_dir / turn["audio_path"]
+        if not src_audio.exists():
+            log.warning(f"  Missing audio: {src_audio}")
+            continue
+
+        base_name = f"{call_id}_turn_{turn['turn']:03d}"
+        shutil.copy2(str(src_audio), str(output_dir / f"{base_name}.wav"))
+        (output_dir / f"{base_name}.lab").write_text(turn["text"].strip())
+        exported += 1
+
+    stats = {
+        "call_id": call_id,
+        "exported": exported,
+        "skipped_short": skipped_short,
+        "skipped_long": skipped_long,
+        "skipped_other": skipped_other,
+    }
+    log.info(
+        f"  {call_id}: exported {exported}, "
+        f"skipped {skipped_other} other + {skipped_short} short + {skipped_long} long"
+    )
+    return stats

@@ -1,10 +1,10 @@
-# Step 7: Label (Speaker Identification)
+# Step 7: Label (Speaker Identification + Dataset Preparation)
 
 ## Purpose
-Label speakers as "me" vs "other" using a voiceprint embedding. Two-phase process: first enroll (create voiceprint from a reference call), then label all calls.
+Label speakers as "me" vs "other" using a voiceprint embedding, then prepare the fine-tuning dataset by exporting "me" turns as `.wav` + `.lab` pairs. Two-phase process: first enroll (create voiceprint from a reference call), then label all calls and optionally export.
 
 ## Module
-`voicetune/label/` — run via `python -m voicetune.label {enroll|label}`
+`voicetune/stages/label/` — run via `python -m voicetune.stages.label {enroll|label}`
 
 ## CLI Args
 
@@ -24,6 +24,11 @@ Label speakers as "me" vs "other" using a voiceprint embedding. Two-phase proces
 |------|---------|-------------|
 | `--voiceprint` | `./output/voiceprint.npy` | Path to voiceprint file |
 | `--call-id` | all calls | Label a specific call only |
+| `--auto-skip` | `False` | Skip low-confidence matches without prompting |
+| `--prepare` | `False` | Also prepare dataset after labeling |
+| `--dataset-dir` | `./output/fish-speech/data/me` | Output directory for .wav + .lab pairs |
+| `--min-duration` | `1.0` | Skip turns shorter than this (seconds) |
+| `--max-duration` | `60.0` | Skip turns longer than this (seconds) |
 
 ## What It Does
 
@@ -45,6 +50,14 @@ Label speakers as "me" vs "other" using a voiceprint embedding. Two-phase proces
    - `speaker_labels` map (e.g. `{"spk_0": "me", "spk_1": "other"}`)
    - `speaker_similarities` scores
 
+### Dataset Preparation (with `--prepare`)
+After labeling, exports "me" turns as `.wav` + `.lab` pairs in Fish Speech format:
+1. Filter for turns where `speaker_label == "me"`
+2. Skip turns outside duration bounds (default 1.0s–60.0s)
+3. Copy turn WAV files to the dataset directory
+4. Write `.lab` files with plain text transcriptions
+5. Write `export_summary.json` with per-call stats
+
 ## Input/Output
 
 **Input:**
@@ -63,6 +76,17 @@ Label speakers as "me" vs "other" using a voiceprint embedding. Two-phase proces
 }
 ```
 
+With `--prepare`, also outputs:
+```
+output/fish-speech/
+  data/
+    me/
+      call_recording_turn_003.wav
+      call_recording_turn_003.lab
+      ...
+  export_summary.json
+```
+
 ## Quality Checks & Interactive Review
 
 After computing similarities, the labeling step flags potential issues:
@@ -75,9 +99,9 @@ After computing similarities, the labeling step flags potential issues:
 
 When `low_similarity` or `ambiguous_match` is flagged, the CLI pauses and prompts the user to manually select which speaker is "me" — showing each speaker's similarity score and sample text. The user can also skip the call entirely (no dialogue.json update). Use `--auto-skip` to skip all low-confidence calls without prompting.
 
-Pipeline is split into two functions: `analyze_speakers()` (compute similarities + flags, no side effects) and `apply_labels()` (write dialogue.json with the chosen speaker). The CLI orchestrates the interactive logic between them.
+Pipeline is split into three functions: `analyze_speakers()` (compute similarities + flags, no side effects), `apply_labels()` (write dialogue.json with the chosen speaker), and `prepare_dataset()` (export .wav + .lab pairs). The CLI orchestrates the interactive logic between them.
 
-Thresholds are module-level constants (`MIN_SIMILARITY`, `MIN_MARGIN`, `MIN_USABLE_TURNS`).
+Thresholds are module-level constants (`MIN_SIMILARITY`, `MIN_MARGIN`, `MIN_USABLE_TURNS`, `MIN_EXPORT_DURATION`, `MAX_EXPORT_DURATION`).
 
 ## Key Implementation Details
 - Uses resemblyzer `VoiceEncoder` (singleton, loaded once)
@@ -85,6 +109,7 @@ Thresholds are module-level constants (`MIN_SIMILARITY`, `MIN_MARGIN`, `MIN_USAB
 - Minimum 1600 samples required for a meaningful embedding (skips shorter clips)
 - Cosine similarity: `dot(ref, emb) / (norm(ref) * norm(emb))`
 - The `run.py` orchestrator prompts the user interactively to select their speaker during first enrollment (shows sample text and audio paths)
+- When run via `run.py`, `--prepare` is passed automatically
 
 ## Dependencies
-`resemblyzer`, `soundfile`, `numpy`
+`resemblyzer`, `soundfile`, `numpy`, `shutil`

@@ -1,6 +1,6 @@
 """LLM-based speaker validation.
 
-Takes translated transcripts and uses an LLM to validate speaker
+Takes diarized transcripts and uses an LLM to validate speaker
 assignments using conversational context. Diarization often
 misattributes turns — the LLM uses dialogue flow, names, and
 context to fix these errors. Supports Bedrock (Claude) and llama.cpp backends.
@@ -45,6 +45,8 @@ class RejectReason(str, Enum):
     IMPROPER_DIARIZATION = "improper_diarization"
     INCORRECT_SPEAKER_ASSIGNMENT = "incorrect_speaker_assignment"
     GARBLED_TRANSCRIPT = "garbled_transcript"
+    TOO_SHORT = "too_short"
+    TOO_LONG = "too_long"
     # File-level issues (reported in top-level "issues")
     INCORRECT_SPEAKER_COUNT = "incorrect_speaker_count"
     NONSENSICAL_CONVERSATION = "nonsensical_conversation"
@@ -60,7 +62,18 @@ TURN_ISSUES = {
     RejectReason.IMPROPER_DIARIZATION,
     RejectReason.INCORRECT_SPEAKER_ASSIGNMENT,
     RejectReason.GARBLED_TRANSCRIPT,
+    RejectReason.TOO_SHORT,
+    RejectReason.TOO_LONG,
 }
+
+FILE_ISSUES = {
+    RejectReason.INCORRECT_SPEAKER_COUNT,
+    RejectReason.NONSENSICAL_CONVERSATION,
+    RejectReason.LANGUAGE_MISMATCH,
+}
+
+MIN_TURN_DURATION = 0.5
+MAX_TURN_DURATION = 60.0
 
 
 BATCH_SIZE = 80
@@ -84,7 +97,7 @@ def build_prompt(turns: list[dict], offset: int = 0, context: list[dict] | None 
     if context:
         context_lines = []
         for i, turn in enumerate(context):
-            text = turn.get("text_en", turn["text"])
+            text = turn["text"]
             ctx_idx = offset - len(context) + i
             context_lines.append(
                 f"[{ctx_idx}] {turn['speaker']} ({turn['start']:.1f}s - {turn['end']:.1f}s): {text}"
@@ -93,7 +106,7 @@ def build_prompt(turns: list[dict], offset: int = 0, context: list[dict] | None 
 
     transcript_lines = []
     for i, turn in enumerate(turns):
-        text = turn.get("text_en", turn["text"])
+        text = turn["text"]
         global_idx = offset + i
         transcript_lines.append(
             f"[{global_idx}] {turn['speaker']} ({turn['start']:.1f}s - {turn['end']:.1f}s): {text}"
@@ -175,7 +188,7 @@ def _call_llm_llamacpp(llm, prompt: str, max_tokens: int = 8192) -> str:
 
 
 def process_file(input_path: Path, output_dir: Path, backend: str = "llamacpp") -> dict:
-    """Correct speaker assignments in a translated transcript."""
+    """Correct speaker assignments in a diarized transcript."""
     with open(input_path) as f:
         data = json.load(f)
 
@@ -303,6 +316,17 @@ def process_file(input_path: Path, output_dir: Path, backend: str = "llamacpp") 
                 new_turn["issues"] = turn_issues
                 all_turn_issues.update(turn_issues)
 
+        duration = new_turn["end"] - new_turn["start"]
+        timing_issues = []
+        if duration < MIN_TURN_DURATION:
+            timing_issues.append(RejectReason.TOO_SHORT.value)
+        if duration > MAX_TURN_DURATION:
+            timing_issues.append(RejectReason.TOO_LONG.value)
+        if timing_issues:
+            existing = new_turn.get("issues", [])
+            new_turn["issues"] = existing + timing_issues
+            all_turn_issues.update(timing_issues)
+
         validated_turns.append(new_turn)
 
     speakers = sorted(set(t["speaker"] for t in validated_turns))
@@ -319,16 +343,19 @@ def process_file(input_path: Path, output_dir: Path, backend: str = "llamacpp") 
     if all_turn_issues:
         log.warning(f"  Turn-level issues: {', '.join(sorted(all_turn_issues))}")
 
-    all_reject_reasons = [r.value for r in llm_reasons] + sorted(all_turn_issues - {r.value for r in llm_reasons})
+    # Only file-level issues and confidence cause rejection; per-turn issues
+    # are preserved on individual turns for the filter step to handle.
+    file_level_values = {r.value for r in FILE_ISSUES}
+    file_reject_reasons = [r.value for r in llm_reasons if r.value in file_level_values]
     if 0 <= overall_confidence < MIN_CONFIDENCE:
-        all_reject_reasons.append(RejectReason.LOW_CONFIDENCE.value)
-    reject = bool(all_reject_reasons)
+        file_reject_reasons.append(RejectReason.LOW_CONFIDENCE.value)
+    reject = bool(file_reject_reasons)
 
     if reject:
         log.warning(f"  REJECTED {call_id}")
         output = dict(data)
         output["rejected"] = True
-        output["reject_reasons"] = all_reject_reasons
+        output["reject_reasons"] = file_reject_reasons
         output["validation_confidence"] = overall_confidence
         output["turns"] = validated_turns
 
@@ -341,7 +368,7 @@ def process_file(input_path: Path, output_dir: Path, backend: str = "llamacpp") 
         return {
             "rejected": True,
             "call_id": call_id,
-            "reasons": all_reject_reasons,
+            "reasons": file_reject_reasons,
             "confidence": overall_confidence,
             "num_turns": len(validated_turns),
             "num_speakers": len(speakers),
