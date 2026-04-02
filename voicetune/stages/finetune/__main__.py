@@ -4,7 +4,7 @@ import argparse
 import logging
 from pathlib import Path
 
-from .pipeline import run_finetune
+from .pipeline import prepare_dataset, run_finetune
 
 log = logging.getLogger(__name__)
 
@@ -15,15 +15,35 @@ def main():
     setup_logging()
 
     parser = argparse.ArgumentParser(
-        description="Fine-tune Fish Speech S2 Pro via cloud GPU"
+        description="Prepare dataset and fine-tune Fish Speech S2 Pro via cloud GPU"
     )
     parser.add_argument(
         "--run-dir", type=Path, default=Path("./output"),
         help="Base output directory (default: ./output)"
     )
     parser.add_argument(
-        "--input-dir", type=Path, default=None,
-        help="Directory containing exported wav+lab pairs (default: <run-dir>/fish-speech/data)"
+        "--labeled-dir", type=Path, default=None,
+        help="Directory containing labeled dialogue.json files (default: <run-dir>/labeled)"
+    )
+    parser.add_argument(
+        "--segmented-dir", type=Path, default=None,
+        help="Directory containing segmented audio (default: <run-dir>/segmented)"
+    )
+    parser.add_argument(
+        "--data-dir", type=Path, default=None,
+        help="Directory for prepared wav+lab dataset (default: <run-dir>/fish-speech/data)"
+    )
+    parser.add_argument(
+        "--min-duration", type=float, default=1.0,
+        help="Skip turns shorter than this (seconds, default: 1.0)"
+    )
+    parser.add_argument(
+        "--max-duration", type=float, default=60.0,
+        help="Skip turns longer than this (seconds, default: 60.0)"
+    )
+    parser.add_argument(
+        "--no-prepare", action="store_true",
+        help="Skip dataset preparation (use existing data in data-dir)"
     )
     parser.add_argument(
         "--max-steps", type=int, default=4000,
@@ -43,13 +63,27 @@ def main():
     )
     args = parser.parse_args()
 
-    if args.input_dir is None:
-        args.input_dir = args.run_dir / "fish-speech" / "data"
+    if args.labeled_dir is None:
+        args.labeled_dir = args.run_dir / "labeled"
+    if args.segmented_dir is None:
+        args.segmented_dir = args.run_dir / "segmented"
+    if args.data_dir is None:
+        args.data_dir = args.run_dir / "fish-speech" / "data"
     if args.output_dir is None:
         args.output_dir = args.run_dir / "finetune"
 
+    if not args.no_prepare:
+        log.info(f"Preparing dataset from {args.labeled_dir}")
+        prepare_dataset(
+            labeled_dir=args.labeled_dir,
+            segmented_dir=args.segmented_dir,
+            output_dir=args.data_dir,
+            min_duration=args.min_duration,
+            max_duration=args.max_duration,
+        )
+
     run_finetune(
-        data_dir=args.input_dir,
+        data_dir=args.data_dir,
         max_steps=args.max_steps,
         test=args.test,
         output_dir=args.output_dir,

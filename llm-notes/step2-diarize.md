@@ -18,10 +18,10 @@ Identify who spoke when and transcribe each segment. Combines steps 2 and 3 from
 ## Five Backends
 
 ### AWS Transcribe (`aws.py`)
-- Uploads WAV to S3, starts an async TranscriptionJob
+- **Batch mode:** all files are uploaded and submitted as concurrent TranscriptionJobs up front, then polled together in a single loop (15s intervals). Results are collected and S3 cleaned up as each job finishes. Per-file failures don't block the rest.
+- `diarize()` still works for single-file use; `diarize_batch()` is used by the CLI for multi-file runs
 - Auto-detects language between `en-US`, `hi-IN`, `mr-IN` (overridable)
 - Speaker labels via `ShowSpeakerLabels` setting (max 3 by default)
-- Polls every 15s for completion, downloads JSON result, cleans up S3
 - Parses word-level speaker map and groups into turns
 - **Requires:** `AWS_S3_BUCKET`, `AWS_REGION` env vars, boto3
 

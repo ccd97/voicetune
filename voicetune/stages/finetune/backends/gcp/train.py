@@ -12,6 +12,7 @@ import re
 import subprocess
 import sys
 import urllib.request
+import zipfile
 from pathlib import Path
 
 from google.cloud import storage
@@ -108,15 +109,20 @@ def pull_training_data(bucket: storage.Bucket, fish_dir: Path) -> None:
     log.info("Pulling training data from GCS...")
     data_dir = fish_dir / "data"
     data_dir.mkdir(parents=True, exist_ok=True)
-    count = _download_gcs_dir(bucket, "data/", data_dir)
-    log.info(f"  Downloaded {count} files")
+    zip_path = fish_dir / "training-data.zip"
+    bucket.blob("training-data.zip").download_to_filename(str(zip_path))
+    with zipfile.ZipFile(zip_path) as zf:
+        zf.extractall(data_dir)
+    zip_path.unlink()
+    count = sum(1 for _ in data_dir.rglob("*") if _.is_file())
+    log.info(f"  Extracted {count} files")
 
 
 def extract_vq(fish_dir: Path, python: str) -> None:
     log.info("Extracting semantic tokens...")
     _run([
         python, "tools/vqgan/extract_vq.py", "data",
-        "--num-workers", "1", "--batch-size", "16",
+        "--num-workers", "1", "--batch-size", "4",
         "--config-name", "modded_dac_vq",
         "--checkpoint-path", "checkpoints/s2-pro/codec.pth",
     ], cwd=fish_dir)

@@ -12,7 +12,12 @@ Launch a GCP A100 VM that runs the full Fish Speech S2 Pro LoRA fine-tuning pipe
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--input-dir` | `./output/fish-speech/data` | Exported training data |
+| `--labeled-dir` | `./output/labeled` | Labeled dialogue.json directory (from label step) |
+| `--segmented-dir` | `./output/segmented` | Segmented audio directory |
+| `--data-dir` | `./output/fish-speech/data` | Where to write/read prepared dataset |
+| `--min-duration` | `1.0` | Skip turns shorter than this (seconds) |
+| `--max-duration` | `60.0` | Skip turns longer than this (seconds) |
+| `--no-prepare` | `False` | Skip dataset preparation (use existing data) |
 | `--max-steps` | `4000` | Training steps |
 | `--test` | `False` | Spot A100, 1 step, auto-delete |
 | `--output-dir` | `./output/finetune` | Where to download finetuned model |
@@ -22,9 +27,10 @@ Launch a GCP A100 VM that runs the full Fish Speech S2 Pro LoRA fine-tuning pipe
 
 ### Local Side (pipeline.py)
 
-1. Validates `{data-dir}/me/` has `.wav` + `.lab` pairs
-2. Creates GCS bucket if needed, grants compute SA access
-3. Rsyncs training data to `gs://voicetune-finetune-cdcunha/data/`
+1. Prepares dataset: reads labeled `dialogue.json` files from `output/labeled/`, copies "me" turns as `.wav` + `.lab` pairs to `output/fish-speech/data/me/`, filtering by duration bounds
+2. Validates `{data-dir}/me/` has `.wav` + `.lab` pairs
+3. Creates GCS bucket if needed, grants compute SA access
+3. Zips training data and uploads `training-data.zip` to `gs://voicetune-finetune-cdcunha/`
 4. Cleans up any existing instance across all candidate zones
 5. Tries ~15 zones until one has A100 capacity
 6. Polls `{bucket}/status.txt` every 30s until COMPLETE or FAILED
@@ -55,7 +61,9 @@ Status is reported to `{bucket}/status.txt` at each phase: STARTING → DRIVERS_
 
 ## Input/Output
 
-**Input:** `output/fish-speech/data/me/*.wav` + `*.lab` (from label step with `--prepare`)
+**Input:**
+- `output/labeled/{call_id}/dialogue.json` (from label step)
+- `output/segmented/{call_id}/turns/*.wav` (audio files)
 
 **Output:** `output/finetune/s2-pro-finetuned/` — merged Fish Speech model weights
 

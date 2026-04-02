@@ -342,7 +342,7 @@ def main():
                 **step_kw,
             )
 
-        timings["label"] = run_step("label", ["label", "--prepare"], **step_kw)
+        timings["label"] = run_step("label", ["label"], **step_kw)
 
     if "finetune" in steps_to_run:
         finetune_args = ["--provider", args.finetune_provider]

@@ -5,7 +5,7 @@ import logging
 import warnings
 from pathlib import Path
 
-from .pipeline import find_preprocessed_wavs, process_file
+from .pipeline import find_preprocessed_wavs, process_file, process_files_batch_aws
 
 warnings.filterwarnings("ignore", category=UserWarning, module="pyannote")
 
@@ -66,19 +66,36 @@ def main():
     skipped = 0
     failed = []
 
+    pending = []
     for wav in wav_files:
         if (args.output_dir / f"{wav.parent.name}_diarized.json").exists():
             skipped += 1
-            continue
-        try:
-            result = process_file(wav, args.output_dir, args.mode, args.num_speakers, args.language)
-            n_turns = len(result["turns"])
-            speakers = set(t["speaker"] for t in result["turns"])
-            log.info(f"  {wav.parent.name}: {n_turns} turns, {len(speakers)} speakers")
-            succeeded += 1
-        except Exception:
-            log.exception(f"Failed to process {wav}")
-            failed.append(str(wav))
+        else:
+            pending.append(wav)
+
+    if args.mode == "aws":
+        for audio_path, result in process_files_batch_aws(
+            pending, args.output_dir, args.num_speakers, args.language
+        ):
+            if isinstance(result, dict):
+                n_turns = len(result["turns"])
+                speakers = set(t["speaker"] for t in result["turns"])
+                log.info(f"  {audio_path.parent.name}: {n_turns} turns, {len(speakers)} speakers")
+                succeeded += 1
+            else:
+                log.error(f"Failed to process {audio_path}: {result}")
+                failed.append(str(audio_path))
+    else:
+        for wav in pending:
+            try:
+                result = process_file(wav, args.output_dir, args.mode, args.num_speakers, args.language)
+                n_turns = len(result["turns"])
+                speakers = set(t["speaker"] for t in result["turns"])
+                log.info(f"  {wav.parent.name}: {n_turns} turns, {len(speakers)} speakers")
+                succeeded += 1
+            except Exception:
+                log.exception(f"Failed to process {wav}")
+                failed.append(str(wav))
 
     if skipped:
         log.info(f"Skipped {skipped} already-diarized file(s)")

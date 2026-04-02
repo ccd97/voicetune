@@ -1,14 +1,11 @@
 """Speaker labeling pipeline.
 
 Uses resemblyzer to extract speaker embeddings and match against a
-reference voiceprint to label speakers as 'me' vs 'other'. After
-labeling, prepares the fine-tuning dataset by exporting 'me' turns
-as .wav + .lab pairs.
+reference voiceprint to label speakers as 'me' vs 'other'.
 """
 
 import json
 import logging
-import shutil
 from pathlib import Path
 
 import numpy as np
@@ -17,7 +14,6 @@ from resemblyzer import VoiceEncoder, preprocess_wav
 
 log = logging.getLogger(__name__)
 
-# Singleton encoder — loads model once
 _encoder: VoiceEncoder | None = None
 
 
@@ -37,7 +33,7 @@ def extract_embedding(audio_paths: list[Path]) -> np.ndarray:
     for path in audio_paths:
         audio, sr = sf.read(str(path), dtype="float32")
         wav = preprocess_wav(audio, source_sr=sr)
-        if len(wav) < 1600:  # too short for a meaningful embedding
+        if len(wav) < 1600:
             continue
         emb = encoder.embed_utterance(wav)
         embeddings.append(emb)
@@ -49,14 +45,7 @@ def extract_embedding(audio_paths: list[Path]) -> np.ndarray:
 
 
 def enroll(segmented_dir: Path, call_id: str, my_speaker_label: str, output_path: Path) -> None:
-    """Create a voiceprint file from a known call where the user identifies themselves.
-
-    Args:
-        segmented_dir: Path to segmented output (contains call_id/dialogue.json + turns/)
-        call_id: Which call to use as reference
-        my_speaker_label: The speaker label (e.g. 'spk_0') that is 'me'
-        output_path: Where to save the voiceprint .npy file
-    """
+    """Create a voiceprint file from a known call where the user identifies themselves."""
     call_dir = segmented_dir / call_id
     dialogue_path = call_dir / "dialogue.json"
 
@@ -67,7 +56,6 @@ def enroll(segmented_dir: Path, call_id: str, my_speaker_label: str, output_path
     if not my_turns:
         raise ValueError(f"No turns found for speaker '{my_speaker_label}' in {call_id}")
 
-    # Use up to 10 longest turns for a robust embedding
     my_turns.sort(key=lambda t: t["duration"], reverse=True)
     audio_paths = [call_dir / t["audio_path"] for t in my_turns[:10]]
 
@@ -120,6 +108,18 @@ def analyze_speakers(segmented_dir: Path, call_id: str, voiceprint_path: Path) -
         else:
             similarities[speaker] = -1.0
 
+    if not similarities:
+        log.warning(f"  No speakers found in {call_id}, skipping")
+        return {
+            "call_id": call_id,
+            "dialogue": dialogue,
+            "similarities": {},
+            "best_match": None,
+            "quality_flags": ["no_speakers"],
+            "speaker_samples": {},
+            "needs_review": False,
+        }
+
     best_match = max(similarities, key=similarities.get)
 
     quality_flags = []
@@ -139,7 +139,6 @@ def analyze_speakers(segmented_dir: Path, call_id: str, voiceprint_path: Path) -
             quality_flags.append(f"insufficient_audio:{speaker}")
             log.warning(f"  Insufficient audio for {speaker}: only {count} usable turn(s)")
 
-    # Sample text per speaker for interactive review
     speaker_samples = {}
     for speaker in speakers:
         turns = [t for t in dialogue["turns"] if t["speaker"] == speaker]
@@ -156,8 +155,8 @@ def analyze_speakers(segmented_dir: Path, call_id: str, voiceprint_path: Path) -
     }
 
 
-def apply_labels(segmented_dir: Path, analysis: dict, me_speaker: str) -> dict:
-    """Apply speaker labels using the given speaker as 'me' and write dialogue.json."""
+def apply_labels(analysis: dict, me_speaker: str, output_dir: Path) -> None:
+    """Apply speaker labels and write labelled dialogue.json to output_dir."""
     call_id = analysis["call_id"]
     dialogue = analysis["dialogue"]
     speakers = dialogue["speakers"]
@@ -172,70 +171,10 @@ def apply_labels(segmented_dir: Path, analysis: dict, me_speaker: str) -> dict:
     dialogue["speaker_similarities"] = analysis["similarities"]
     dialogue["label_quality_flags"] = analysis["quality_flags"]
 
-    call_dir = segmented_dir / call_id
+    call_dir = output_dir / call_id
+    call_dir.mkdir(parents=True, exist_ok=True)
     dialogue_path = call_dir / "dialogue.json"
     with open(dialogue_path, "w") as f:
         json.dump(dialogue, f, indent=2, ensure_ascii=False)
 
-    log.info(f"  Updated {dialogue_path}")
-    return dialogue
-
-
-MIN_EXPORT_DURATION = 1.0
-MAX_EXPORT_DURATION = 60.0
-
-
-def prepare_dataset(
-    segmented_dir: Path,
-    call_id: str,
-    output_dir: Path,
-    min_duration: float = MIN_EXPORT_DURATION,
-    max_duration: float = MAX_EXPORT_DURATION,
-) -> dict:
-    """Export 'me' turns from a labeled call as .wav + .lab pairs."""
-    call_dir = segmented_dir / call_id
-    dialogue_path = call_dir / "dialogue.json"
-
-    with open(dialogue_path) as f:
-        dialogue = json.load(f)
-
-    exported = 0
-    skipped_short = 0
-    skipped_long = 0
-    skipped_other = 0
-
-    for turn in dialogue["turns"]:
-        if turn.get("speaker_label") != "me":
-            skipped_other += 1
-            continue
-
-        duration = turn["duration"]
-        if duration < min_duration:
-            skipped_short += 1
-            continue
-        if duration > max_duration:
-            skipped_long += 1
-            continue
-
-        src_audio = call_dir / turn["audio_path"]
-        if not src_audio.exists():
-            log.warning(f"  Missing audio: {src_audio}")
-            continue
-
-        base_name = f"{call_id}_turn_{turn['turn']:03d}"
-        shutil.copy2(str(src_audio), str(output_dir / f"{base_name}.wav"))
-        (output_dir / f"{base_name}.lab").write_text(turn["text"].strip())
-        exported += 1
-
-    stats = {
-        "call_id": call_id,
-        "exported": exported,
-        "skipped_short": skipped_short,
-        "skipped_long": skipped_long,
-        "skipped_other": skipped_other,
-    }
-    log.info(
-        f"  {call_id}: exported {exported}, "
-        f"skipped {skipped_other} other + {skipped_short} short + {skipped_long} long"
-    )
-    return stats
+    log.info(f"  Wrote {dialogue_path}")

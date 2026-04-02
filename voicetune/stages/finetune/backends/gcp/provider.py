@@ -7,7 +7,9 @@ monitors progress via guest attributes, and downloads the finetuned model.
 
 import logging
 import os
+import tempfile
 import time
+import zipfile
 from pathlib import Path
 
 from google.api_core.exceptions import GoogleAPICallError, NotFound
@@ -44,10 +46,18 @@ def ensure_bucket(bucket: storage.Bucket) -> None:
 
 def upload_data(bucket: storage.Bucket, data_dir: Path) -> None:
     files = sorted(f for f in data_dir.rglob("*") if f.is_file())
-    log.info(f"Uploading {len(files)} files to gs://{BUCKET_NAME}/data/...")
-    for f in files:
-        blob_name = f"data/{f.relative_to(data_dir)}"
-        bucket.blob(blob_name).upload_from_filename(str(f))
+    log.info(f"Zipping {len(files)} files...")
+    with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
+        zip_path = Path(tmp.name)
+    try:
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            for f in files:
+                zf.write(f, f.relative_to(data_dir))
+        size_mb = zip_path.stat().st_size / (1024 * 1024)
+        log.info(f"Uploading training-data.zip ({size_mb:.1f} MB) to gs://{BUCKET_NAME}/...")
+        bucket.blob("training-data.zip").upload_from_filename(str(zip_path))
+    finally:
+        zip_path.unlink(missing_ok=True)
 
 
 def upload_train_script(bucket: storage.Bucket) -> None:

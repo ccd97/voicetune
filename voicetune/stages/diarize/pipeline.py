@@ -41,3 +41,19 @@ def process_file(audio_path: Path, output_dir: Path, mode: str,
     result["num_speakers"] = len(set(t["speaker"] for t in result["turns"]))
     save_result(result, output_dir)
     return result
+
+
+def process_files_batch_aws(audio_paths: list[Path], output_dir: Path,
+                            num_speakers: int | None = None,
+                            language: str | None = None) -> list[tuple[Path, dict | str]]:
+    """Submit all files to AWS Transcribe concurrently and collect results."""
+    from .backends.aws import diarize_batch
+
+    batch_results = diarize_batch(audio_paths, num_speakers, language)
+    processed = []
+    for audio_path, result in batch_results:
+        if isinstance(result, dict):
+            result["num_speakers"] = len(set(t["speaker"] for t in result["turns"]))
+            save_result(result, output_dir)
+        processed.append((audio_path, result))
+    return processed

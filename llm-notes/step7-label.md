@@ -1,7 +1,7 @@
-# Step 7: Label (Speaker Identification + Dataset Preparation)
+# Step 7: Label (Speaker Identification)
 
 ## Purpose
-Label speakers as "me" vs "other" using a voiceprint embedding, then prepare the fine-tuning dataset by exporting "me" turns as `.wav` + `.lab` pairs. Two-phase process: first enroll (create voiceprint from a reference call), then label all calls and optionally export.
+Label speakers as "me" vs "other" using a voiceprint embedding. Two-phase process: first enroll (create voiceprint from a reference call), then label all calls.
 
 ## Module
 `voicetune/stages/label/` — run via `python -m voicetune.stages.label {enroll|label}`
@@ -23,12 +23,9 @@ Label speakers as "me" vs "other" using a voiceprint embedding, then prepare the
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--voiceprint` | `./output/voiceprint.npy` | Path to voiceprint file |
+| `--output-dir` | `./output/labeled` | Output directory for labeled dialogue.json files |
 | `--call-id` | all calls | Label a specific call only |
-| `--auto-skip` | `False` | Skip low-confidence matches without prompting |
-| `--prepare` | `False` | Also prepare dataset after labeling |
-| `--dataset-dir` | `./output/fish-speech/data/me` | Output directory for .wav + .lab pairs |
-| `--min-duration` | `1.0` | Skip turns shorter than this (seconds) |
-| `--max-duration` | `60.0` | Skip turns longer than this (seconds) |
+| `--review` | `False` | Prompt for manual review on low-confidence matches (default: skip them) |
 
 ## What It Does
 
@@ -45,18 +42,7 @@ Label speakers as "me" vs "other" using a voiceprint embedding, then prepare the
 2. Extract averaged embeddings per speaker (up to 10 longest turns each)
 3. Compute cosine similarity between each speaker embedding and the reference voiceprint
 4. Assign "me" to the most similar speaker, "other" to the rest
-5. Update dialogue.json in-place with:
-   - `speaker_label` field on each turn ("me" or "other")
-   - `speaker_labels` map (e.g. `{"spk_0": "me", "spk_1": "other"}`)
-   - `speaker_similarities` scores
-
-### Dataset Preparation (with `--prepare`)
-After labeling, exports "me" turns as `.wav` + `.lab` pairs in Fish Speech format:
-1. Filter for turns where `speaker_label == "me"`
-2. Skip turns outside duration bounds (default 1.0s–60.0s)
-3. Copy turn WAV files to the dataset directory
-4. Write `.lab` files with plain text transcriptions
-5. Write `export_summary.json` with per-call stats
+5. Write labeled dialogue.json to `output/labeled/{call_id}/dialogue.json` (does **not** modify segmented files)
 
 ## Input/Output
 
@@ -65,26 +51,16 @@ After labeling, exports "me" turns as `.wav` + `.lab` pairs in Fish Speech forma
 - `output/segmented/{call_id}/turns/*.wav`
 - `output/voiceprint.npy` (for labeling)
 
-**Output:** Updates `dialogue.json` in-place, adding:
+**Output:** `output/labeled/{call_id}/dialogue.json` — copy of dialogue with added fields:
 ```json
 {
   "speaker_labels": {"spk_0": "me", "spk_1": "other"},
   "speaker_similarities": {"spk_0": 0.87, "spk_1": 0.42},
+  "label_quality_flags": [],
   "turns": [
     {"speaker": "spk_0", "speaker_label": "me", ...}
   ]
 }
-```
-
-With `--prepare`, also outputs:
-```
-output/fish-speech/
-  data/
-    me/
-      call_recording_turn_003.wav
-      call_recording_turn_003.lab
-      ...
-  export_summary.json
 ```
 
 ## Quality Checks & Interactive Review
@@ -97,11 +73,11 @@ After computing similarities, the labeling step flags potential issues:
 | `ambiguous_match` | Top-two margin < 0.10 | Assignment isn't confident |
 | `insufficient_audio:{spk}` | Speaker has 1-2 usable turns | Embedding may be unreliable |
 
-When `low_similarity` or `ambiguous_match` is flagged, the CLI pauses and prompts the user to manually select which speaker is "me" — showing each speaker's similarity score and sample text. The user can also skip the call entirely (no dialogue.json update). Use `--auto-skip` to skip all low-confidence calls without prompting.
+Low-confidence calls are skipped by default. Pass `--review` to get interactive prompts where you can manually select which speaker is "me" or skip the call.
 
-Pipeline is split into three functions: `analyze_speakers()` (compute similarities + flags, no side effects), `apply_labels()` (write dialogue.json with the chosen speaker), and `prepare_dataset()` (export .wav + .lab pairs). The CLI orchestrates the interactive logic between them.
+Pipeline is split into two functions: `analyze_speakers()` (compute similarities + flags, no side effects) and `apply_labels()` (writes labeled dialogue.json to output dir).
 
-Thresholds are module-level constants (`MIN_SIMILARITY`, `MIN_MARGIN`, `MIN_USABLE_TURNS`, `MIN_EXPORT_DURATION`, `MAX_EXPORT_DURATION`).
+Thresholds are module-level constants (`MIN_SIMILARITY`, `MIN_MARGIN`, `MIN_USABLE_TURNS`).
 
 ## Key Implementation Details
 - Uses resemblyzer `VoiceEncoder` (singleton, loaded once)
@@ -109,7 +85,6 @@ Thresholds are module-level constants (`MIN_SIMILARITY`, `MIN_MARGIN`, `MIN_USAB
 - Minimum 1600 samples required for a meaningful embedding (skips shorter clips)
 - Cosine similarity: `dot(ref, emb) / (norm(ref) * norm(emb))`
 - The `run.py` orchestrator prompts the user interactively to select their speaker during first enrollment (shows sample text and audio paths)
-- When run via `run.py`, `--prepare` is passed automatically
 
 ## Dependencies
-`resemblyzer`, `soundfile`, `numpy`, `shutil`
+`resemblyzer`, `soundfile`, `numpy`

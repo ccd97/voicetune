@@ -1,11 +1,10 @@
 """CLI entry point: python -m voicetune.stages.label"""
 
 import argparse
-import json
 import logging
 from pathlib import Path
 
-from .pipeline import analyze_speakers, apply_labels, enroll, prepare_dataset
+from .pipeline import analyze_speakers, apply_labels, enroll
 
 log = logging.getLogger(__name__)
 
@@ -60,7 +59,6 @@ def main():
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    # Enroll subcommand
     enroll_parser = subparsers.add_parser("enroll", help="Create voiceprint from a reference call")
     enroll_parser.add_argument(
         "--call-id", type=str, required=True,
@@ -75,37 +73,23 @@ def main():
         help="Where to save voiceprint (default: <run-dir>/voiceprint.npy)"
     )
 
-    # Label subcommand
     label_parser = subparsers.add_parser("label", help="Label speakers in segmented calls")
     label_parser.add_argument(
         "--voiceprint", type=Path, default=None,
         help="Path to voiceprint file (default: <run-dir>/voiceprint.npy)"
     )
     label_parser.add_argument(
+        "--output-dir", type=Path, default=None,
+        help="Output directory for labeled dialogue.json files (default: <run-dir>/labeled)"
+    )
+    label_parser.add_argument(
         "--call-id", type=str, default=None,
         help="Label a specific call (default: label all calls)"
     )
     label_parser.add_argument(
-        "--auto-skip", action="store_true",
-        help="Automatically skip low-confidence matches instead of prompting"
+        "--review", action="store_true",
+        help="Prompt for manual review on low-confidence matches (default: skip them)"
     )
-    label_parser.add_argument(
-        "--prepare", action="store_true",
-        help="Also prepare dataset after labeling (export 'me' turns as .wav + .lab)"
-    )
-    label_parser.add_argument(
-        "--dataset-dir", type=Path, default=None,
-        help="Output directory for .wav + .lab pairs (default: <run-dir>/fish-speech/data/me)"
-    )
-    label_parser.add_argument(
-        "--min-duration", type=float, default=1.0,
-        help="Skip turns shorter than this (seconds, default: 1.0)"
-    )
-    label_parser.add_argument(
-        "--max-duration", type=float, default=60.0,
-        help="Skip turns longer than this (seconds, default: 60.0)"
-    )
-
     args = parser.parse_args()
 
     if args.input_dir is None:
@@ -121,6 +105,8 @@ def main():
             log.error(f"Voiceprint not found: {args.voiceprint}. Run 'enroll' first.")
             return
 
+        output_dir = args.output_dir or args.run_dir / "labeled"
+
         if args.call_id:
             call_ids = [args.call_id]
         else:
@@ -133,46 +119,35 @@ def main():
             log.warning(f"No segmented calls found in {args.input_dir}")
             return
 
-        log.info(f"Labeling {len(call_ids)} call(s)")
-        labeled_ids = []
+        log.info(f"Labeling {len(call_ids)} call(s) -> {output_dir}")
+        labeled = 0
         skipped = 0
+        skipped_done = 0
         for call_id in call_ids:
+            if not args.review and (output_dir / call_id / "dialogue.json").exists():
+                skipped_done += 1
+                continue
             log.info(f"Processing {call_id}")
             analysis = analyze_speakers(args.input_dir, call_id, args.voiceprint)
 
+            if analysis["best_match"] is None:
+                skipped += 1
+                continue
+
             if analysis["needs_review"]:
-                me_speaker = prompt_speaker_selection(call_id, analysis, args.auto_skip)
+                me_speaker = prompt_speaker_selection(call_id, analysis, not args.review)
                 if me_speaker is None:
                     skipped += 1
                     continue
             else:
                 me_speaker = analysis["best_match"]
 
-            apply_labels(args.input_dir, analysis, me_speaker)
-            labeled_ids.append(call_id)
+            apply_labels(analysis, me_speaker, output_dir)
+            labeled += 1
 
-        log.info(f"Labeled {len(labeled_ids)} call(s)" + (f", {skipped} skipped" if skipped else ""))
-
-        if args.prepare and labeled_ids:
-            dataset_dir = args.dataset_dir or args.run_dir / "fish-speech" / "data" / "me"
-            dataset_dir.mkdir(parents=True, exist_ok=True)
-            log.info(f"Preparing dataset -> {dataset_dir}")
-            total_exported = 0
-            all_stats = []
-            for call_id in labeled_ids:
-                stats = prepare_dataset(
-                    args.input_dir, call_id, dataset_dir,
-                    min_duration=args.min_duration,
-                    max_duration=args.max_duration,
-                )
-                total_exported += stats["exported"]
-                all_stats.append(stats)
-
-            summary = {"total_exported": total_exported, "output_dir": str(dataset_dir), "calls": all_stats}
-            summary_path = dataset_dir.parent / "export_summary.json"
-            with open(summary_path, "w") as f:
-                json.dump(summary, f, indent=2)
-            log.info(f"Total: {total_exported} utterances exported to {dataset_dir}")
+        if skipped_done:
+            log.info(f"Skipped {skipped_done} already-labeled call(s)")
+        log.info(f"Labeled {labeled} call(s)" + (f", {skipped} skipped" if skipped else ""))
 
 
 if __name__ == "__main__":

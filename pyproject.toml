@@ -35,6 +35,7 @@ aws = [
     "boto3>=1.38",
 ]
 gcp = [
+    "google-api-core>=2.24",
     "google-cloud-speech>=2.30",
     "google-cloud-storage>=2.19",
     "google-cloud-compute>=1.22",
