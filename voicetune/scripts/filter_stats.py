@@ -183,41 +183,66 @@ def _summarize_json_stage(root: Path, pattern: str, stage_name: str, audio_root:
     return summary
 
 
-def _summarize_filter(root: Path, audio_root: Path) -> StageSummary:
-    files = sorted(root.glob("*_filtered.json"))
-    summary = StageSummary("filter", files=len(files))
+def _summarize_filter(root: Path) -> StageSummary:
+    """Filter writes one <call_id>/dialogue.json + cleaned turns/*.wav per call."""
+    dialogue_files = sorted(root.glob("*/dialogue.json"))
+    summary = StageSummary("filter", files=len(dialogue_files))
     removed_turns = 0
-    sizes = []
+    removed_by_reason: Counter = Counter()
+    reject_reasons_counter: Counter = Counter()
+    wav_bytes = []
+    durations = []
     lang_durations: dict = {}
 
-    for path in files:
+    for path in dialogue_files:
         data = _load_json(path)
         turns = data.get("turns", [])
         summary.total_turns += len(turns)
         summary.total_turn_chars += _turn_text_chars(turns)
+
+        if data.get("rejected"):
+            summary.rejected += 1
+            for r in data.get("reject_reasons", []):
+                reject_reasons_counter[r] += 1
+        else:
+            summary.accepted += 1
+
         file_dur = 0.0
-        if turns:
+        if "total_duration" in data and isinstance(data["total_duration"], (int, float)):
+            file_dur = float(data["total_duration"])
+        elif turns:
             file_dur = max(t.get("end", 0) for t in turns) - min(t.get("start", 0) for t in turns)
+        if file_dur:
+            durations.append(file_dur)
+
         lang = data.get("language")
         if lang:
             key = _normalize_lang(lang)
             lang_durations[key] = lang_durations.get(key, 0.0) + file_dur
-        orig = int(data.get("original_turn_count", len(turns)))
-        filt = int(data.get("filtered_turn_count", len(turns)))
-        removed_turns += max(0, orig - filt)
-        audio = audio_root / data["call_id"] / "full_normalized.wav"
-        if audio.exists():
-            sizes.append(audio.stat().st_size)
-        if data.get("rejected"):
-            summary.rejected += 1
-        else:
-            summary.accepted += 1
 
-    summary.total_audio_bytes = sum(sizes)
+        orig = int(data.get("original_turn_count", len(turns)))
+        kept = int(data.get("filtered_turn_count", len(turns)))
+        removed_turns += max(0, orig - kept)
+        for reason, count in (data.get("filter_removed") or {}).items():
+            removed_by_reason[reason] += int(count)
+
+        for turn in turns:
+            wav_path = path.parent / turn.get("audio_path", "")
+            if wav_path.exists():
+                wav_bytes.append(wav_path.stat().st_size)
+
+    summary.total_duration = sum(durations)
+    summary.total_audio_bytes = sum(wav_bytes)
     summary.extra.append(("removed turns", f"{removed_turns:,}"))
     if summary.total_turns and removed_turns:
         total = summary.total_turns + removed_turns
         summary.extra.append(("keep rate", _pct(summary.total_turns, total)))
+    for reason, count in removed_by_reason.most_common():
+        summary.extra.append((f"  {reason}", f"{count:,}"))
+    for reason, count in reject_reasons_counter.most_common():
+        summary.extra.append((f"reject:{reason}", f"{count:,}"))
+    if wav_bytes:
+        summary.extra.append(("avg turn wav", _fmt_bytes(mean(wav_bytes))))
     _add_language_rows(summary, lang_durations)
     return summary
 
@@ -247,7 +272,10 @@ def _summarize_segment(root: Path) -> StageSummary:
     return summary
 
 
-def _summarize_label(labeled_root: Path, segmented_root: Path) -> StageSummary:
+def _summarize_label(labeled_root: Path, audio_root: Path) -> StageSummary:
+    """`audio_root` is the dir holding the per-call `turns/*.wav` that label references
+    (the filter output in the current pipeline).
+    """
     dialogue_files = sorted(labeled_root.glob("*/dialogue.json"))
     summary = StageSummary("label", files=len(dialogue_files))
     me_turns = 0
@@ -274,7 +302,7 @@ def _summarize_label(labeled_root: Path, segmented_root: Path) -> StageSummary:
                 call_me_dur += dur
             elif "speaker_label" in turn:
                 other_turns += 1
-            audio_path = segmented_root / call_id / turn.get("audio_path", "")
+            audio_path = audio_root / call_id / turn.get("audio_path", "")
             if audio_path.exists():
                 wav_bytes.append(audio_path.stat().st_size)
 
@@ -309,8 +337,6 @@ def _summarize_finetune(data_root: Path) -> StageSummary:
         export = _load_json(summary_path)
         calls = export.get("calls", [])
         summary.extra.append(("calls", f"{len(calls):,}"))
-        summary.extra.append(("skipped short", f"{sum(c.get('skipped_short', 0) for c in calls):,}"))
-        summary.extra.append(("skipped long", f"{sum(c.get('skipped_long', 0) for c in calls):,}"))
         summary.extra.append(("skipped other", f"{sum(c.get('skipped_other', 0) for c in calls):,}"))
 
     try:
@@ -385,7 +411,7 @@ def main() -> None:
     parser.add_argument(
         "--stages",
         type=str,
-        default="preprocess,diarize,validation,filter,segment,label,finetune",
+        default="preprocess,diarize,validation,segment,filter,label,finetune",
         help="Comma-separated stages to include",
     )
     args = parser.parse_args()
@@ -395,9 +421,9 @@ def main() -> None:
         "preprocess": lambda: _summarize_preprocess(args.run_dir / "preprocessed"),
         "diarize": lambda: _summarize_json_stage(args.run_dir / "diarized", "*_diarized.json", "diarize", args.run_dir / "preprocessed"),
         "validation": lambda: _summarize_json_stage(args.run_dir / "validated", "*_validated.json", "validation", args.run_dir / "preprocessed"),
-        "filter": lambda: _summarize_filter(args.run_dir / "filtered", args.run_dir / "preprocessed"),
         "segment": lambda: _summarize_segment(args.run_dir / "segmented"),
-        "label": lambda: _summarize_label(args.run_dir / "labeled", args.run_dir / "segmented"),
+        "filter": lambda: _summarize_filter(args.run_dir / "filtered"),
+        "label": lambda: _summarize_label(args.run_dir / "labeled", args.run_dir / "filtered"),
         "finetune": lambda: _summarize_finetune(args.run_dir / "fish-speech" / "data"),
     }
 

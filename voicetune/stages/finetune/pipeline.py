@@ -7,22 +7,13 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
-MIN_EXPORT_DURATION = 2.5
-MAX_EXPORT_DURATION = 60.0
-
 
 def prepare_dataset(
     labeled_dir: Path,
     filtered_dir: Path,
     output_dir: Path,
-    min_duration: float = MIN_EXPORT_DURATION,
-    max_duration: float = MAX_EXPORT_DURATION,
 ) -> dict:
-    """Export 'me' turns from labeled calls as .wav + .lab pairs.
-
-    WAVs are copied as-is from the filter step output; per-clip loudness
-    normalization and amplitude-decay repair are handled there, not here.
-    """
+    """Export 'me' turns from labeled calls as .wav + .lab pairs."""
     me_dir = output_dir / "me"
     me_dir.mkdir(parents=True, exist_ok=True)
 
@@ -43,21 +34,11 @@ def prepare_dataset(
 
         audio_dir = filtered_dir / call_id
         exported = 0
-        skipped_short = 0
-        skipped_long = 0
         skipped_other = 0
 
         for turn in dialogue["turns"]:
             if turn.get("speaker_label") != "me":
                 skipped_other += 1
-                continue
-
-            duration = turn["duration"]
-            if duration < min_duration:
-                skipped_short += 1
-                continue
-            if duration > max_duration:
-                skipped_long += 1
                 continue
 
             src_audio = audio_dir / turn["audio_path"]
@@ -73,14 +54,9 @@ def prepare_dataset(
         stats = {
             "call_id": call_id,
             "exported": exported,
-            "skipped_short": skipped_short,
-            "skipped_long": skipped_long,
             "skipped_other": skipped_other,
         }
-        log.info(
-            f"  {call_id}: exported {exported}, "
-            f"skipped {skipped_other} other + {skipped_short} short + {skipped_long} long"
-        )
+        log.info(f"  {call_id}: exported {exported}, skipped {skipped_other} non-'me' turns")
         all_stats.append(stats)
         total_exported += exported
 

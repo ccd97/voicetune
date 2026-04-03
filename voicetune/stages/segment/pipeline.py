@@ -1,10 +1,6 @@
-"""Turn segmentation pipeline.
+"""Turn segmentation: merge same-speaker turns, cut per-turn WAVs.
 
-Reads validated transcripts, merges consecutive same-speaker turns, cuts
-per-turn WAV files from the preprocessed audio, and outputs a structured
-dialogue JSON. File-level and per-turn rejection codes from validation
-are applied here: rejected files are skipped and flagged turns are not cut.
-Audio-quality filtering and clip cleaning happen later in the filter step.
+Does not drop turns — validation metadata is propagated to the filter step.
 """
 
 import json
@@ -15,16 +11,8 @@ import numpy as np
 import soundfile as sf
 
 from voicetune.common import write_wav
-from voicetune.stages.validation.pipeline import FILE_ISSUES, TURN_ISSUES, RejectReason
 
 log = logging.getLogger(__name__)
-
-FILE_REJECT_CODES = {r.value for r in FILE_ISSUES} | {
-    RejectReason.LANGUAGE_NOT_ALLOWED.value,
-    RejectReason.MONO_SPEAKER.value,
-    RejectReason.LOW_CONFIDENCE.value,
-}
-TURN_REMOVE_CODES = {r.value for r in TURN_ISSUES}
 
 
 def merge_turns(turns: list[dict], max_gap: float) -> list[dict]:
@@ -33,14 +21,15 @@ def merge_turns(turns: list[dict], max_gap: float) -> list[dict]:
         return []
 
     merged = [dict(turns[0])]
-
     for turn in turns[1:]:
         prev = merged[-1]
         gap = turn["start"] - prev["end"]
-
         if turn["speaker"] == prev["speaker"] and gap <= max_gap:
             prev["end"] = turn["end"]
             prev["text"] = prev["text"] + " " + turn["text"]
+            combined = list(dict.fromkeys([*prev.get("issues", []), *turn.get("issues", [])]))
+            if combined:
+                prev["issues"] = combined
         else:
             merged.append(dict(turn))
 
@@ -49,10 +38,8 @@ def merge_turns(turns: list[dict], max_gap: float) -> list[dict]:
 
 def cut_turn_audio(audio: np.ndarray, sr: int, start: float, end: float) -> np.ndarray:
     """Extract a segment of audio between start and end times."""
-    start_sample = int(start * sr)
-    end_sample = int(end * sr)
-    start_sample = max(0, start_sample)
-    end_sample = min(len(audio), end_sample)
+    start_sample = max(0, int(start * sr))
+    end_sample = min(len(audio), int(end * sr))
     return audio[start_sample:end_sample]
 
 
@@ -75,38 +62,18 @@ def process_file(
     output_dir: Path,
     merge_gap: float,
 ) -> dict:
-    """Process a validated JSON: drop rejected files/turns, merge, cut audio."""
+    """Cut per-turn audio from a validated JSON. Does not drop turns."""
     with open(validated_path) as f:
         data = json.load(f)
 
     call_id = data["call_id"]
+    turns = data.get("turns", [])
 
-    if data.get("rejected"):
-        reject_reasons = set(data.get("reject_reasons", []))
-        if reject_reasons & FILE_REJECT_CODES:
-            log.info(f"  {call_id}: skipped (file-level rejection: {', '.join(reject_reasons)})")
-            return {"call_id": call_id, "rejected": True, "reasons": sorted(reject_reasons)}
+    log.info(f"Processing {call_id}: {len(turns)} turns")
 
-    original_turns = data["turns"]
-    kept_turns: list[dict] = []
-    removed_counts: dict[str, int] = {}
-    for turn in original_turns:
-        issues = turn.get("issues", [])
-        removable = [i for i in issues if i in TURN_REMOVE_CODES]
-        if removable:
-            for code in removable:
-                removed_counts[code] = removed_counts.get(code, 0) + 1
-            continue
-        kept_turns.append(turn)
-
-    if not kept_turns:
-        log.warning(f"  {call_id}: all {len(original_turns)} turns removed by validation codes")
-        return {"call_id": call_id, "rejected": True, "reasons": ["all_turns_removed"]}
-
-    log.info(f"Processing {call_id}: {len(original_turns)} raw turns, {len(kept_turns)} after validation codes")
-
-    merged = merge_turns(kept_turns, merge_gap)
-    log.info(f"  Merged: {len(kept_turns)} -> {len(merged)} turns (gap threshold: {merge_gap}s)")
+    merged = merge_turns(turns, merge_gap)
+    if len(merged) != len(turns):
+        log.info(f"  Merged: {len(turns)} -> {len(merged)} turns (gap threshold: {merge_gap}s)")
 
     audio_path = find_audio_for_call(call_id, audio_dir)
     if not audio_path:
@@ -126,7 +93,7 @@ def process_file(
         turn_filename = f"turn_{idx:03d}_{turn['speaker']}.wav"
         write_wav(turns_dir / turn_filename, turn_audio, sr)
 
-        output_turns.append({
+        out_turn = {
             "turn": idx,
             "speaker": turn["speaker"],
             "start": round(turn["start"], 3),
@@ -134,7 +101,10 @@ def process_file(
             "duration": round(turn["end"] - turn["start"], 3),
             "audio_path": f"turns/{turn_filename}",
             "text": turn["text"],
-        })
+        }
+        if turn.get("issues"):
+            out_turn["issues"] = list(turn["issues"])
+        output_turns.append(out_turn)
 
     speakers = sorted({t["speaker"] for t in output_turns})
     result = {
@@ -147,12 +117,15 @@ def process_file(
         ) if output_turns else 0,
         "turns": output_turns,
     }
-    if removed_counts:
-        result["validation_removed"] = removed_counts
+    if data.get("rejected"):
+        result["rejected"] = True
+    if data.get("reject_reasons"):
+        result["reject_reasons"] = list(data["reject_reasons"])
+    if "validation_confidence" in data:
+        result["validation_confidence"] = data["validation_confidence"]
 
     with open(call_output_dir / "dialogue.json", "w") as f:
         json.dump(result, f, indent=2, ensure_ascii=False)
 
-    validation_note = f", skipped {sum(removed_counts.values())} by validation codes" if removed_counts else ""
-    log.info(f"  Output: {len(output_turns)} turns, {len(speakers)} speakers{validation_note} -> {call_output_dir.name}/")
+    log.info(f"  Output: {len(output_turns)} turns, {len(speakers)} speakers -> {call_output_dir.name}/")
     return result

@@ -1,12 +1,4 @@
-"""Audio-quality filter: clean per-turn clips and drop bad audio.
-
-Input is a segmented call directory (dialogue.json + turns/*.wav). Applies:
-  - silence / low-energy drops
-  - loudness normalization and tail-decay repair or drop
-
-Output mirrors the input layout under the filter dir: a fresh dialogue.json
-listing the kept turns and a turns/ folder with the cleaned WAVs.
-"""
+"""Filter pipeline: the single place where turns and files get dropped."""
 
 import json
 import logging
@@ -16,12 +8,25 @@ import numpy as np
 import soundfile as sf
 
 from voicetune.common import write_wav
+from voicetune.stages.validation.pipeline import FILE_ISSUES, TURN_ISSUES, RejectReason
 
 log = logging.getLogger(__name__)
+
+FILE_REJECT_CODES = {r.value for r in FILE_ISSUES} | {
+    RejectReason.LANGUAGE_NOT_ALLOWED.value,
+    RejectReason.MONO_SPEAKER.value,
+    RejectReason.LOW_CONFIDENCE.value,
+}
+VALIDATION_TURN_CODES = {r.value for r in TURN_ISSUES}
 
 LOW_ENERGY_CODE = "low_energy"
 MOSTLY_SILENCE_CODE = "mostly_silence"
 TAIL_DECAY_CODE = "tail_decay"
+TOO_SHORT_CODE = RejectReason.TOO_SHORT.value
+TOO_LONG_CODE = RejectReason.TOO_LONG.value
+
+MIN_TURN_DURATION = 2.5
+MAX_TURN_DURATION = 60.0
 
 SILENCE_RMS_DB = -40.0
 LOW_ENERGY_RMS_DB = -30.0
@@ -113,35 +118,82 @@ def _load_turn(segmented_call_dir: Path, turn: dict) -> tuple[np.ndarray, int] |
     return audio.astype(np.float32), sr
 
 
-def process_call(segmented_call_dir: Path, output_dir: Path) -> dict:
-    """Clean per-turn audio and write the filtered call directory."""
+def _reject_file(call_id: str, reasons: list[str], original_count: int,
+                 output_dir: Path) -> dict:
+    """Write a rejected dialogue.json and return the result dict."""
+    call_output_dir = output_dir / call_id
+    call_output_dir.mkdir(parents=True, exist_ok=True)
+    rejection = {
+        "call_id": call_id,
+        "rejected": True,
+        "reject_reasons": sorted(set(reasons)),
+        "original_turn_count": original_count,
+        "filtered_turn_count": 0,
+        "turns": [],
+    }
+    with open(call_output_dir / "dialogue.json", "w") as f:
+        json.dump(rejection, f, indent=2, ensure_ascii=False)
+    return {"call_id": call_id, "rejected": True, "reasons": rejection["reject_reasons"]}
+
+
+def process_call(
+    segmented_call_dir: Path,
+    output_dir: Path,
+    min_duration: float = MIN_TURN_DURATION,
+    max_duration: float = MAX_TURN_DURATION,
+) -> dict:
+    """Apply all turn/file filtering on a segmented call and write a clean output."""
     with open(segmented_call_dir / "dialogue.json") as f:
         dialogue = json.load(f)
 
     call_id = dialogue["call_id"]
-    turns = dialogue["turns"]
+    turns = dialogue.get("turns", [])
     original_count = len(turns)
-    removed_counts: dict[str, int] = {}
 
+    if dialogue.get("rejected"):
+        file_reasons = [r for r in dialogue.get("reject_reasons", []) if r in FILE_REJECT_CODES]
+        if file_reasons:
+            log.info(f"  {call_id}: rejected by validation ({', '.join(file_reasons)})")
+            return _reject_file(call_id, file_reasons, original_count, output_dir)
+
+    removed_counts: dict[str, int] = {}
     kept_final: list[tuple[dict, np.ndarray, int]] = []
+
     for turn in turns:
+        validation_codes = [c for c in turn.get("issues", []) if c in VALIDATION_TURN_CODES]
+        if validation_codes:
+            for code in validation_codes:
+                removed_counts[code] = removed_counts.get(code, 0) + 1
+            continue
+
+        duration = float(turn.get("duration", turn.get("end", 0) - turn.get("start", 0)))
+        if duration < min_duration:
+            removed_counts[TOO_SHORT_CODE] = removed_counts.get(TOO_SHORT_CODE, 0) + 1
+            continue
+        if duration > max_duration:
+            removed_counts[TOO_LONG_CODE] = removed_counts.get(TOO_LONG_CODE, 0) + 1
+            continue
+
         got = _load_turn(segmented_call_dir, turn)
         if got is None:
             continue
         audio, sr = got
+
         issue = audio_quality_issue(audio)
         if issue:
             removed_counts[issue] = removed_counts.get(issue, 0) + 1
             continue
+
         cleaned = clean_clip(audio, sr)
         if cleaned is None:
             removed_counts[TAIL_DECAY_CODE] = removed_counts.get(TAIL_DECAY_CODE, 0) + 1
             continue
+
         kept_final.append((turn, cleaned, sr))
 
     if not kept_final:
         log.warning(f"  {call_id}: all {original_count} turns removed")
-        return {"call_id": call_id, "rejected": True, "reasons": ["all_turns_filtered"]}
+        return _reject_file(call_id, ["all_turns_filtered"], original_count, output_dir)
 
     call_output_dir = output_dir / call_id
     call_output_dir.mkdir(parents=True, exist_ok=True)
@@ -152,9 +204,11 @@ def process_call(segmented_call_dir: Path, output_dir: Path) -> dict:
         out_wav_path = call_output_dir / turn["audio_path"]
         out_wav_path.parent.mkdir(parents=True, exist_ok=True)
         write_wav(out_wav_path, cleaned, sr)
-        out_turns.append(turn)
+        out_turn = {k: v for k, v in turn.items() if k != "issues"}
+        out_turns.append(out_turn)
 
-    out_dialogue = {k: v for k, v in dialogue.items() if k not in ("turns", "num_turns", "speakers")}
+    out_dialogue = {k: v for k, v in dialogue.items()
+                    if k not in ("turns", "num_turns", "speakers", "rejected", "reject_reasons")}
     out_dialogue["speakers"] = sorted({t["speaker"] for t in out_turns})
     out_dialogue["num_turns"] = len(out_turns)
     out_dialogue["turns"] = out_turns

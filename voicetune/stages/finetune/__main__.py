@@ -4,7 +4,7 @@ import argparse
 import logging
 from pathlib import Path
 
-from .pipeline import MIN_EXPORT_DURATION, prepare_dataset, run_finetune
+from .pipeline import prepare_dataset, run_finetune
 
 log = logging.getLogger(__name__)
 
@@ -32,14 +32,6 @@ def main():
     parser.add_argument(
         "--data-dir", type=Path, default=None,
         help="Directory for prepared wav+lab dataset (default: <run-dir>/fish-speech/data)"
-    )
-    parser.add_argument(
-        "--min-duration", type=float, default=MIN_EXPORT_DURATION,
-        help=f"Skip turns shorter than this (seconds, default: {MIN_EXPORT_DURATION})"
-    )
-    parser.add_argument(
-        "--max-duration", type=float, default=60.0,
-        help="Skip turns longer than this (seconds, default: 60.0)"
     )
     parser.add_argument(
         "--no-prepare", action="store_true",
@@ -78,8 +70,6 @@ def main():
             labeled_dir=args.labeled_dir,
             filtered_dir=args.filtered_dir,
             output_dir=args.data_dir,
-            min_duration=args.min_duration,
-            max_duration=args.max_duration,
         )
 
     run_finetune(

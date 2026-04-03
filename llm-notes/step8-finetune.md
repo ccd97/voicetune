@@ -15,19 +15,19 @@ Launch a GCP A100 VM that runs the full Fish Speech S2 Pro LoRA fine-tuning pipe
 | `--labeled-dir` | `./output/labeled` | Labeled dialogue.json directory (from label step) |
 | `--filtered-dir` | `./output/filtered` | Filtered per-call audio directory (cleaned by the filter step) |
 | `--data-dir` | `./output/fish-speech/data` | Where to write/read prepared dataset |
-| `--min-duration` | `2.5` | Skip turns shorter than this (seconds) |
-| `--max-duration` | `60.0` | Skip turns longer than this (seconds) |
 | `--no-prepare` | `False` | Skip dataset preparation (use existing data) |
 | `--max-steps` | `800` | Training steps |
 | `--test` | `False` | Spot A100, 1 step, auto-delete |
 | `--output-dir` | `./output/finetune` | Where to download finetuned model |
 | `--provider` | `gcp` | Cloud provider for fine-tuning |
 
+Duration-based filtering (`--min-duration`, `--max-duration`) used to live here but moved to the filter step (step 6). Finetune now assumes its input is already clean.
+
 ## What It Does
 
 ### Local Side (pipeline.py)
 
-1. Prepares dataset: reads labeled `dialogue.json` files from `output/labeled/`, copies the matching "me" turn WAVs from `output/filtered/` (already loudness-normalized and decay-repaired by the filter step) as `.wav` + `.lab` pairs to `output/fish-speech/data/me/`, filtering by duration bounds
+1. Prepares dataset: reads labeled `dialogue.json` files from `output/labeled/`, copies the matching "me" turn WAVs from `output/filtered/` (already duration-bounded, loudness-normalized, and decay-repaired by the filter step) as `.wav` + `.lab` pairs to `output/fish-speech/data/me/`. No additional filtering happens here — only speaker-label selection.
 2. Validates `{data-dir}/me/` has `.wav` + `.lab` pairs
 3. Creates GCS bucket if needed, grants compute SA access
 3. Zips training data and uploads `training-data.zip` to `gs://voicetune-finetune-cdcunha/`

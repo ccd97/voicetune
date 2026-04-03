@@ -4,7 +4,7 @@ import argparse
 import logging
 from pathlib import Path
 
-from .pipeline import process_call
+from .pipeline import MAX_TURN_DURATION, MIN_TURN_DURATION, process_call
 
 log = logging.getLogger(__name__)
 
@@ -15,7 +15,8 @@ def main():
     setup_logging()
 
     parser = argparse.ArgumentParser(
-        description="Filter segmented calls: drop bad-audio turns and clean per-turn WAVs"
+        description="Filter segmented calls: apply validation + duration + audio-quality drops "
+                    "and clean per-turn WAVs"
     )
     parser.add_argument(
         "--run-dir", type=Path, default=Path("./output"),
@@ -28,6 +29,14 @@ def main():
     parser.add_argument(
         "--output-dir", type=Path, default=None,
         help="Output directory for filtered call directories (default: <run-dir>/filtered)"
+    )
+    parser.add_argument(
+        "--min-duration", type=float, default=MIN_TURN_DURATION,
+        help=f"Drop turns shorter than this (seconds, default: {MIN_TURN_DURATION})"
+    )
+    parser.add_argument(
+        "--max-duration", type=float, default=MAX_TURN_DURATION,
+        help=f"Drop turns longer than this (seconds, default: {MAX_TURN_DURATION})"
     )
     args = parser.parse_args()
 
@@ -61,7 +70,11 @@ def main():
             skipped += 1
             continue
 
-        result = process_call(call_dir, args.output_dir)
+        result = process_call(
+            call_dir, args.output_dir,
+            min_duration=args.min_duration,
+            max_duration=args.max_duration,
+        )
         if result.get("rejected"):
             rejected += 1
         else:
