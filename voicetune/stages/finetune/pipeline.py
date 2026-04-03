@@ -7,18 +7,22 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
-MIN_EXPORT_DURATION = 1.0
+MIN_EXPORT_DURATION = 2.5
 MAX_EXPORT_DURATION = 60.0
 
 
 def prepare_dataset(
     labeled_dir: Path,
-    segmented_dir: Path,
+    filtered_dir: Path,
     output_dir: Path,
     min_duration: float = MIN_EXPORT_DURATION,
     max_duration: float = MAX_EXPORT_DURATION,
 ) -> dict:
-    """Export 'me' turns from labeled calls as .wav + .lab pairs."""
+    """Export 'me' turns from labeled calls as .wav + .lab pairs.
+
+    WAVs are copied as-is from the filter step output; per-clip loudness
+    normalization and amplitude-decay repair are handled there, not here.
+    """
     me_dir = output_dir / "me"
     me_dir.mkdir(parents=True, exist_ok=True)
 
@@ -37,7 +41,7 @@ def prepare_dataset(
         with open(call_dir / "dialogue.json") as f:
             dialogue = json.load(f)
 
-        audio_dir = segmented_dir / call_id
+        audio_dir = filtered_dir / call_id
         exported = 0
         skipped_short = 0
         skipped_long = 0

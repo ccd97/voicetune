@@ -145,6 +145,48 @@ def find_latest_checkpoint(results_dir: Path) -> Path | None:
     return ckpts[-1] if ckpts else None
 
 
+def find_best_checkpoint(results_dir: Path) -> Path | None:
+    # S2 Pro overfits the text branch fast, so the last checkpoint is usually
+    # worse than an earlier one. Read val/loss from TensorBoard events and
+    # pick the checkpoint with the lowest val/loss.
+    tb_dir = results_dir.parent / "tensorboard"
+    try:
+        from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
+        events = sorted(tb_dir.rglob("events.out.tfevents.*"))
+        step_to_loss: dict[int, float] = {}
+        for ev_path in events:
+            ea = EventAccumulator(str(ev_path.parent), size_guidance={"scalars": 0})
+            ea.Reload()
+            if "val/loss" not in ea.Tags().get("scalars", []):
+                continue
+            for ev in ea.Scalars("val/loss"):
+                step_to_loss[ev.step] = ev.value
+    except Exception as e:
+        log.warning(f"Could not read TensorBoard val/loss ({e}); using latest checkpoint")
+        return find_latest_checkpoint(results_dir)
+
+    if not step_to_loss:
+        return find_latest_checkpoint(results_dir)
+
+    ckpts = list(results_dir.glob("step_*.ckpt"))
+    best: tuple[float, Path] | None = None
+    for ckpt in ckpts:
+        step = int(re.search(r"step_(\d+)", ckpt.stem).group(1))
+        loss = step_to_loss.get(step)
+        if loss is None:
+            nearby = [(abs(s - step), l) for s, l in step_to_loss.items() if abs(s - step) <= 10]
+            if not nearby:
+                continue
+            loss = min(nearby)[1]
+        if best is None or loss < best[0]:
+            best = (loss, ckpt)
+
+    if best is None:
+        return find_latest_checkpoint(results_dir)
+    log.info(f"Best checkpoint by val/loss: {best[1].name} (loss={best[0]:.4f})")
+    return best[1]
+
+
 def train_lora(fish_dir: Path, python: str, max_steps: int) -> Path:
     lora_config = f"r_{LORA_RANK}_alpha_{LORA_ALPHA}"
     cmd = [
@@ -155,8 +197,13 @@ def train_lora(fish_dir: Path, python: str, max_steps: int) -> Path:
         "tokenizer.model_path=checkpoints/s2-pro",
         f"+lora@model.model.lora_config={lora_config}",
         f"trainer.max_steps={max_steps}",
+        "trainer.val_check_interval=50",
         "data.batch_size=8",
         "max_length=1024",
+        "model.optimizer.lr=5e-5",
+        "callbacks.model_checkpoint.monitor=val/loss",
+        "callbacks.model_checkpoint.mode=min",
+        "callbacks.model_checkpoint.save_top_k=5",
     ]
     if max_steps < 100:
         cmd.append(f"callbacks.model_checkpoint.every_n_train_steps={max_steps}")
@@ -183,7 +230,7 @@ def train_lora(fish_dir: Path, python: str, max_steps: int) -> Path:
         if attempt == MAX_RETRIES:
             raise RuntimeError(f"Training failed after {MAX_RETRIES} attempts")
 
-    ckpt = find_latest_checkpoint(results_dir)
+    ckpt = find_best_checkpoint(results_dir)
     if not ckpt:
         raise RuntimeError(f"No checkpoint found in {results_dir}")
     return ckpt
@@ -211,7 +258,7 @@ def upload_results(bucket: storage.Bucket, fish_dir: Path) -> None:
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--bucket", required=True)
-    parser.add_argument("--max-steps", type=int, default=1000)
+    parser.add_argument("--max-steps", type=int, default=800)
     parser.add_argument("--fish-dir", type=Path, default=Path("/opt/fish-speech"))
     args = parser.parse_args()
 

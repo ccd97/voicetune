@@ -1,4 +1,4 @@
-"""One-click pipeline: preprocess → diarize → scrub → validation → filter → segment → label → finetune."""
+"""One-click pipeline: preprocess → diarize → scrub → validation → segment → filter → label → finetune."""
 
 import argparse
 import json
@@ -17,8 +17,8 @@ STEPS = [
     "diarize",        # 2
     "scrub",          # 3
     "validation",     # 4
-    "filter",         # 5
-    "segment",        # 6
+    "segment",        # 5
+    "filter",         # 6
     "label",          # 7
     "finetune",       # 8
 ]
@@ -314,28 +314,28 @@ def main():
             validation_args += ["--input-dir", str(scrubbed_dir)]
         timings["validation"] = run_step("validation", validation_args, **step_kw)
 
-    if "filter" in steps_to_run:
-        timings["filter"] = run_step("filter", [], **step_kw)
-
     if "segment" in steps_to_run:
         timings["segment"] = run_step("segment", [], **step_kw)
 
+    if "filter" in steps_to_run:
+        timings["filter"] = run_step("filter", [], **step_kw)
+
     if "label" in steps_to_run:
-        seg_dir = run_dir / "segmented"
+        filtered_dir = run_dir / "filtered"
         call_ids = sorted(
-            d.name for d in seg_dir.iterdir()
+            d.name for d in filtered_dir.iterdir()
             if d.is_dir() and (d / "dialogue.json").exists()
-        ) if seg_dir.exists() else []
+        ) if filtered_dir.exists() else []
 
         if not call_ids:
-            log.error("No segmented calls found for labeling")
+            log.error("No filtered calls found for labeling")
             sys.exit(1)
 
         voiceprint = run_dir / "voiceprint.npy"
         if voiceprint.exists():
             log.info(f"Using existing voiceprint: {voiceprint}")
         else:
-            speaker = _prompt_speaker(seg_dir, call_ids[0])
+            speaker = _prompt_speaker(filtered_dir, call_ids[0])
             timings["label-enroll"] = run_step(
                 "label",
                 ["enroll", "--call-id", call_ids[0], "--speaker", speaker],

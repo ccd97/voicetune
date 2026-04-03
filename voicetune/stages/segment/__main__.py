@@ -15,7 +15,7 @@ def main():
     setup_logging()
 
     parser = argparse.ArgumentParser(
-        description="Turn segmentation: merge same-speaker turns, cut per-turn audio (Step 4)"
+        description="Turn segmentation: merge same-speaker turns, cut per-turn audio"
     )
     parser.add_argument(
         "--run-dir", type=Path, default=Path("./output"),
@@ -23,7 +23,7 @@ def main():
     )
     parser.add_argument(
         "--input-dir", type=Path, default=None,
-        help="Directory containing filtered JSON files (default: <run-dir>/filtered)"
+        help="Directory containing validated JSON files (default: <run-dir>/validated)"
     )
     parser.add_argument(
         "--audio-dir", type=Path, default=None,
@@ -40,7 +40,7 @@ def main():
     args = parser.parse_args()
 
     if args.input_dir is None:
-        args.input_dir = args.run_dir / "filtered"
+        args.input_dir = args.run_dir / "validated"
     if args.audio_dir is None:
         args.audio_dir = args.run_dir / "preprocessed"
     if args.output_dir is None:
@@ -50,9 +50,9 @@ def main():
         log.error(f"Input directory does not exist: {args.input_dir}")
         return
 
-    json_files = sorted(args.input_dir.glob("*_filtered.json"))
+    json_files = sorted(args.input_dir.glob("*_validated.json"))
     if not json_files:
-        log.warning(f"No filtered JSON files found in {args.input_dir}")
+        log.warning(f"No validated JSON files found in {args.input_dir}")
         return
 
     log.info(f"Found {len(json_files)} file(s)")
@@ -63,7 +63,7 @@ def main():
     failed = []
 
     for json_file in json_files:
-        call_id = json_file.name.replace("_filtered.json", "")
+        call_id = json_file.name.replace("_validated.json", "")
         if (args.output_dir / call_id / "dialogue.json").exists():
             skipped_done += 1
             continue

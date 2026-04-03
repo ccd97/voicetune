@@ -20,43 +20,42 @@ Fine-tune Fish Audio S2 Pro (5B Dual-AR TTS) on personal call recordings so the 
 input/*.m4a
     │
     ▼
-[1. preprocess]     → output/preprocessed/   (16kHz 16-bit mono WAV)
+[1. preprocess]   → output/preprocessed/   (16kHz 16-bit mono WAV)
     │
     ▼
-[2. diarize]        → output/diarized/       (speaker-labeled transcript JSON)
+[2. diarize]      → output/diarized/       (raw speaker-labeled transcript JSON)
     │
     ▼
-[3. segment]        → output/segmented/      (per-turn WAV + dialogue JSON)
+[3. scrub]        → output/scrubbed/       (PII scrubbed from transcripts)
     │
     ▼
-[4. label]          → output/segmented/      (speaker_label: "me" / "other" added)
+[4. validation]   → output/validated/      (LLM-graded transcripts with file/turn issue codes)
     │
     ▼
-[5. pairformat]     → output/pairs/          (input/prompt/response audio pairs)
+[5. segment]      → output/segmented/{call_id}/  (per-turn WAV + dialogue JSON; validation codes applied)
     │
     ▼
-[6. export]         → output/fish-speech/    (*.wav + *.lab in Fish Speech format)  ← TODO
+[6. filter]       → output/filtered/{call_id}/   (audio-quality drops, multi-speaker checks,
+    │                                              loudness-normalized + decay-repaired WAVs)
+    ▼
+[7. label]        → output/labeled/{call_id}/    (speaker_label: "me" / "other" added)
     │
     ▼
-[7. quality filter]                          (PII scrub, min duration, noise check)  ← TODO
-    │
-    ▼
-[8. fine-tune]      → Fish Speech LoRA training on S2 Pro                           ← TODO
+[8. finetune]     → Fish Speech LoRA training on S2 Pro (GCP A100 VM)
 ```
 
 ## Current Status
 
-
-| Step                             | Module                                             | Status                        |
-| -------------------------------- | -------------------------------------------------- | ----------------------------- |
-| 1. Preprocess                    | `python -m preprocess`                             | Done                          |
-| 2. Diarize                       | `python -m diarize --mode aws                      | gcp`                          |
-| 3. Segment                       | `python -m segment`                                | Done                          |
-| 4. Label speakers                | `python -m label enroll` / `python -m label label` | Done (resemblyzer voiceprint) |
-| 5. Pair format                   | `python -m pairformat`                             | Done                          |
-| 6. Export to Fish Speech format  | `python -m export`                                 | **TODO**                      |
-| 7. Quality filtering + PII scrub | `python -m filter`                                 | **TODO**                      |
-| 8. Fine-tune S2 Pro              | Fish Speech training pipeline                      | **TODO**                      |
+| Step             | Module                                             | Status                        |
+| ---------------- | -------------------------------------------------- | ----------------------------- |
+| 1. Preprocess    | `python -m voicetune.stages.preprocess`            | Done                          |
+| 2. Diarize       | `python -m voicetune.stages.diarize`               | Done                          |
+| 3. Scrub         | `python -m voicetune.stages.scrub`                 | Done                          |
+| 4. Validation    | `python -m voicetune.stages.validation`            | Done                          |
+| 5. Segment       | `python -m voicetune.stages.segment`               | Done                          |
+| 6. Filter        | `python -m voicetune.stages.filter`                | Done (includes clip cleaning) |
+| 7. Label         | `python -m voicetune.stages.label enroll` / `label`| Done (resemblyzer voiceprint) |
+| 8. Fine-tune     | `python -m voicetune.stages.finetune`              | Done                          |
 
 
 ## Step 6: Export to Fish Speech Format

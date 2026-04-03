@@ -4,7 +4,7 @@ import argparse
 import logging
 from pathlib import Path
 
-from .pipeline import prepare_dataset, run_finetune
+from .pipeline import MIN_EXPORT_DURATION, prepare_dataset, run_finetune
 
 log = logging.getLogger(__name__)
 
@@ -26,16 +26,16 @@ def main():
         help="Directory containing labeled dialogue.json files (default: <run-dir>/labeled)"
     )
     parser.add_argument(
-        "--segmented-dir", type=Path, default=None,
-        help="Directory containing segmented audio (default: <run-dir>/segmented)"
+        "--filtered-dir", type=Path, default=None,
+        help="Directory containing filtered per-call audio (default: <run-dir>/filtered)"
     )
     parser.add_argument(
         "--data-dir", type=Path, default=None,
         help="Directory for prepared wav+lab dataset (default: <run-dir>/fish-speech/data)"
     )
     parser.add_argument(
-        "--min-duration", type=float, default=1.0,
-        help="Skip turns shorter than this (seconds, default: 1.0)"
+        "--min-duration", type=float, default=MIN_EXPORT_DURATION,
+        help=f"Skip turns shorter than this (seconds, default: {MIN_EXPORT_DURATION})"
     )
     parser.add_argument(
         "--max-duration", type=float, default=60.0,
@@ -46,8 +46,8 @@ def main():
         help="Skip dataset preparation (use existing data in data-dir)"
     )
     parser.add_argument(
-        "--max-steps", type=int, default=4000,
-        help="Training steps (default: 4000)"
+        "--max-steps", type=int, default=800,
+        help="Training steps (default: 800)"
     )
     parser.add_argument(
         "--test", action="store_true",
@@ -65,8 +65,8 @@ def main():
 
     if args.labeled_dir is None:
         args.labeled_dir = args.run_dir / "labeled"
-    if args.segmented_dir is None:
-        args.segmented_dir = args.run_dir / "segmented"
+    if args.filtered_dir is None:
+        args.filtered_dir = args.run_dir / "filtered"
     if args.data_dir is None:
         args.data_dir = args.run_dir / "fish-speech" / "data"
     if args.output_dir is None:
@@ -76,7 +76,7 @@ def main():
         log.info(f"Preparing dataset from {args.labeled_dir}")
         prepare_dataset(
             labeled_dir=args.labeled_dir,
-            segmented_dir=args.segmented_dir,
+            filtered_dir=args.filtered_dir,
             output_dir=args.data_dir,
             min_duration=args.min_duration,
             max_duration=args.max_duration,

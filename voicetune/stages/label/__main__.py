@@ -9,38 +9,6 @@ from .pipeline import analyze_speakers, apply_labels, enroll
 log = logging.getLogger(__name__)
 
 
-def prompt_speaker_selection(call_id: str, analysis: dict, auto_skip: bool) -> str | None:
-    """Prompt user to pick 'me' speaker, or skip. Returns speaker label or None."""
-    flags = ", ".join(analysis["quality_flags"])
-    log.warning(f"  Low-confidence match for {call_id} [{flags}]")
-
-    if auto_skip:
-        log.info(f"  Auto-skipping {call_id}")
-        return None
-
-    print(f"\n--- {call_id}: manual review needed [{flags}] ---")
-    speakers = sorted(analysis["similarities"], key=analysis["similarities"].get, reverse=True)
-    for i, spk in enumerate(speakers):
-        sim = analysis["similarities"][spk]
-        samples = analysis["speaker_samples"].get(spk, [])
-        print(f"  [{i + 1}] {spk} (similarity: {sim:.3f})")
-        for line in samples:
-            print(f"      \"{line}\"")
-
-    print(f"  [s] Skip this call")
-
-    while True:
-        choice = input("Select speaker for 'me': ").strip().lower()
-        if choice == "s":
-            log.info(f"  Skipping {call_id}")
-            return None
-        if choice.isdigit() and 1 <= int(choice) <= len(speakers):
-            selected = speakers[int(choice) - 1]
-            log.info(f"  User selected {selected} as 'me'")
-            return selected
-        print(f"  Invalid choice. Enter 1-{len(speakers)} or 's' to skip.")
-
-
 def main():
     from voicetune.common import setup_logging
 
@@ -55,7 +23,7 @@ def main():
     )
     parser.add_argument(
         "--input-dir", type=Path, default=None,
-        help="Directory containing segmented output (default: <run-dir>/segmented)"
+        help="Directory containing filtered call directories (default: <run-dir>/filtered)"
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -86,14 +54,10 @@ def main():
         "--call-id", type=str, default=None,
         help="Label a specific call (default: label all calls)"
     )
-    label_parser.add_argument(
-        "--review", action="store_true",
-        help="Prompt for manual review on low-confidence matches (default: skip them)"
-    )
     args = parser.parse_args()
 
     if args.input_dir is None:
-        args.input_dir = args.run_dir / "segmented"
+        args.input_dir = args.run_dir / "filtered"
     if args.voiceprint is None:
         args.voiceprint = args.run_dir / "voiceprint.npy"
 
@@ -116,7 +80,7 @@ def main():
             )
 
         if not call_ids:
-            log.warning(f"No segmented calls found in {args.input_dir}")
+            log.warning(f"No filtered calls found in {args.input_dir}")
             return
 
         log.info(f"Labeling {len(call_ids)} call(s) -> {output_dir}")
@@ -124,7 +88,7 @@ def main():
         skipped = 0
         skipped_done = 0
         for call_id in call_ids:
-            if not args.review and (output_dir / call_id / "dialogue.json").exists():
+            if (output_dir / call_id / "dialogue.json").exists():
                 skipped_done += 1
                 continue
             log.info(f"Processing {call_id}")
@@ -134,15 +98,7 @@ def main():
                 skipped += 1
                 continue
 
-            if analysis["needs_review"]:
-                me_speaker = prompt_speaker_selection(call_id, analysis, not args.review)
-                if me_speaker is None:
-                    skipped += 1
-                    continue
-            else:
-                me_speaker = analysis["best_match"]
-
-            apply_labels(analysis, me_speaker, output_dir)
+            apply_labels(analysis, analysis["best_match"], output_dir)
             labeled += 1
 
         if skipped_done:

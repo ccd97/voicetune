@@ -10,7 +10,7 @@ Label speakers as "me" vs "other" using a voiceprint embedding. Two-phase proces
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--input-dir` | `./output/segmented` | Segmented output directory |
+| `--input-dir` | `./output/filtered` | Filtered call directories (dialogue.json + turns/*.wav) |
 
 ### Enroll subcommand
 | Flag | Default | Description |
@@ -25,7 +25,6 @@ Label speakers as "me" vs "other" using a voiceprint embedding. Two-phase proces
 | `--voiceprint` | `./output/voiceprint.npy` | Path to voiceprint file |
 | `--output-dir` | `./output/labeled` | Output directory for labeled dialogue.json files |
 | `--call-id` | all calls | Label a specific call only |
-| `--review` | `False` | Prompt for manual review on low-confidence matches (default: skip them) |
 
 ## What It Does
 
@@ -47,8 +46,8 @@ Label speakers as "me" vs "other" using a voiceprint embedding. Two-phase proces
 ## Input/Output
 
 **Input:**
-- `output/segmented/{call_id}/dialogue.json`
-- `output/segmented/{call_id}/turns/*.wav`
+- `output/filtered/{call_id}/dialogue.json`
+- `output/filtered/{call_id}/turns/*.wav`
 - `output/voiceprint.npy` (for labeling)
 
 **Output:** `output/labeled/{call_id}/dialogue.json` — copy of dialogue with added fields:
@@ -63,9 +62,9 @@ Label speakers as "me" vs "other" using a voiceprint embedding. Two-phase proces
 }
 ```
 
-## Quality Checks & Interactive Review
+## Quality Checks
 
-After computing similarities, the labeling step flags potential issues:
+After computing similarities, the labeling step records diagnostic flags on the output:
 
 | Flag | Condition | Meaning |
 |------|-----------|---------|
@@ -73,7 +72,7 @@ After computing similarities, the labeling step flags potential issues:
 | `ambiguous_match` | Top-two margin < 0.10 | Assignment isn't confident |
 | `insufficient_audio:{spk}` | Speaker has 1-2 usable turns | Embedding may be unreliable |
 
-Low-confidence calls are skipped by default. Pass `--review` to get interactive prompts where you can manually select which speaker is "me" or skip the call.
+Flags are informational only. The speaker with the highest similarity is always selected as "me"; calls are only skipped when no embedding can be extracted at all (`no_speakers`).
 
 Pipeline is split into two functions: `analyze_speakers()` (compute similarities + flags, no side effects) and `apply_labels()` (writes labeled dialogue.json to output dir).
 

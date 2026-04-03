@@ -117,7 +117,6 @@ def analyze_speakers(segmented_dir: Path, call_id: str, voiceprint_path: Path) -
             "best_match": None,
             "quality_flags": ["no_speakers"],
             "speaker_samples": {},
-            "needs_review": False,
         }
 
     best_match = max(similarities, key=similarities.get)
@@ -151,7 +150,6 @@ def analyze_speakers(segmented_dir: Path, call_id: str, voiceprint_path: Path) -
         "best_match": best_match,
         "quality_flags": quality_flags,
         "speaker_samples": speaker_samples,
-        "needs_review": "low_similarity" in quality_flags or "ambiguous_match" in quality_flags,
     }
 
 
