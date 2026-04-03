@@ -1,6 +1,7 @@
 """CLI entry point: python -m voicetune.stages.label"""
 
 import argparse
+import json
 import logging
 from pathlib import Path
 
@@ -87,10 +88,15 @@ def main():
         labeled = 0
         skipped = 0
         skipped_done = 0
+        skipped_rejected = 0
         for call_id in call_ids:
             if (output_dir / call_id / "dialogue.json").exists():
                 skipped_done += 1
                 continue
+            with open(args.input_dir / call_id / "dialogue.json") as f:
+                if json.load(f).get("rejected"):
+                    skipped_rejected += 1
+                    continue
             log.info(f"Processing {call_id}")
             analysis = analyze_speakers(args.input_dir, call_id, args.voiceprint)
 
@@ -103,6 +109,8 @@ def main():
 
         if skipped_done:
             log.info(f"Skipped {skipped_done} already-labeled call(s)")
+        if skipped_rejected:
+            log.info(f"Skipped {skipped_rejected} rejected call(s)")
         log.info(f"Labeled {labeled} call(s)" + (f", {skipped} skipped" if skipped else ""))
 
 
