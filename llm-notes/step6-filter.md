@@ -2,9 +2,9 @@
 
 ## Purpose
 
-The one and only stage in the pipeline that drops turns or rejects files. Every filtering decision — validation issue codes, duration bounds, audio quality, clip cleaning — lives here. Downstream stages (label, finetune) assume their input is already clean and only do selection, not quality filtering.
+The only stage that drops turns or rejects files. Validation codes, duration bounds, and audio-quality checks all run here. Downstream stages (label, finetune) assume their input is clean and only do selection.
 
-Design bias: we would rather drop a clip than train on one that will teach the LoRA a bad habit (fading voice, whispery tail-offs, wrong speaker, cross-talk).
+Bias toward dropping clips rather than keeping marginal ones — training on fading voice, whispery endings, or cross-talk teaches the LoRA bad habits.
 
 ## Module
 
@@ -16,8 +16,8 @@ Design bias: we would rather drop a clip than train on one that will teach the L
 | ---------------- | ---------------------- | ------------------------------------------------------------------------------------------- |
 | `--input-dir`    | `./output/segmented`   | Directory containing segmented call directories (`{call_id}/dialogue.json` + `turns/*.wav`) |
 | `--output-dir`   | `./output/filtered`    | Output directory for filtered call directories (same layout as input, cleaned)              |
-| `--min-duration` | `2.5`                  | Drop turns shorter than this (seconds)                                                      |
-| `--max-duration` | `60.0`                 | Drop turns longer than this (seconds)                                                       |
+| `--min-duration` | `3.0`                  | Drop turns shorter than this (seconds)                                                      |
+| `--max-duration` | `30.0`                 | Drop turns longer than this (seconds)                                                       |
 
 ## What It Does
 
@@ -25,23 +25,21 @@ Applied per call, in this order:
 
 1. **File-level rejection** — if the segmented `dialogue.json` has `rejected: true` and the `reject_reasons` include any of the file-level codes (`incorrect_speaker_count`, `nonsensical_conversation`, `language_mismatch`, `language_not_allowed`, `mono_speaker`, `low_confidence`), write a `dialogue.json` with `rejected: true` and no turns, and stop.
 2. **Validation per-turn codes** — drop any turn whose `issues` array contains a validation turn code (`improper_diarization`, `incorrect_speaker_assignment`, `garbled_transcript`, `too_short`, `too_long`).
-3. **Duration bounds** — drop turns with `duration < --min-duration` or `duration > --max-duration`. This catches turns that validation didn't flag at 0.5 s but that still aren't long enough to train on at 2.5 s, and turns that became too long after segment-time merge.
-4. **Audio quality** — drop `mostly_silence` (RMS < −40 dB) and `low_energy` (RMS in [−40 dB, −30 dB)).
-5. **Clip cleaning** — loudness-normalize each surviving clip to −20 dBFS RMS, linearly boost the tail on clips with 1–5 dB amplitude decay, drop clips with unrepairable decay (> 5 dB first-third vs last-third drop, code `tail_decay`).
-6. **Write** the surviving cleaned WAVs and a new `dialogue.json`. Calls where every turn was dropped are written as `rejected: true` with `all_turns_filtered`.
+3. **Duration bounds** — drop turns with `duration < --min-duration` or `duration > --max-duration`. Tighten these here; downstream finetune consumes `output/filtered/` as-is.
+4. **Audio quality** — drop `mostly_silence` (RMS < −40 dB), `low_energy` (RMS in [−40 dB, −30 dB)), and `tail_decay` (last-third > 5 dB quieter than first-third).
+5. **Write** — surviving WAVs are copied as-is (no amplitude changes; preprocess already normalized loudness) with a new `dialogue.json`. Calls where every turn was dropped are written as `rejected: true` with `all_turns_filtered`.
 
-## Clip cleaning constants
+## Audio-quality constants
 
-Phone-call turns often trail off in volume at the end (natural conversational hand-off). If left in, the LoRA learns the fade pattern and produces audio that gradually quiets out.
+Phone-call turns often trail off in volume. Training on fading clips teaches the LoRA to produce audio that quiets out, so decayed clips are dropped outright.
 
 | Constant             | Value  | Meaning                                                     |
 | -------------------- | ------ | ----------------------------------------------------------- |
-| `TARGET_RMS_DBFS`    | `-20`  | Every kept clip is normalized to this RMS                   |
-| `MAX_TAIL_DECAY_DB`  | `5`    | Clips with last-third > 5 dB quieter than first-third are dropped |
-| `FADE_FRAME_MS`      | `30`   | Frame size for per-clip RMS envelope                        |
-| `SPEECH_FLOOR_DB`    | `-30`  | Frames below this are treated as silence, not speech        |
-
-Clips with 1–5 dB decay get a linear gain ramp applied from the one-third mark to the end that compensates for the measured drop, so the amplitude envelope is roughly flat by the time the clip is normalized.
+| `SILENCE_RMS_DB`     | `-40`  | Clip-level RMS below this → `mostly_silence`                |
+| `LOW_ENERGY_RMS_DB`  | `-30`  | Clip-level RMS in [−40, −30) → `low_energy`                 |
+| `SPEECH_FLOOR_DB`    | `-30`  | Per-frame RMS below this counts as silence                  |
+| `MAX_TAIL_DECAY_DB`  | `5`    | Last-third mean > 5 dB below first-third mean → `tail_decay`|
+| `DECAY_FRAME_MS`     | `30`   | Frame size for the per-clip RMS envelope                    |
 
 ## Input/Output
 
@@ -88,11 +86,11 @@ Rejected dialogue.json (file-level or all-turns-filtered):
 
 ## Key Implementation Details
 
-- `FILE_REJECT_CODES` and `VALIDATION_TURN_CODES` are sourced from `voicetune.stages.validation.pipeline` to stay in sync with validation's code definitions.
-- Already-filtered calls in the output directory are skipped (resume-safe, presence of `{call_id}/dialogue.json`).
-- Kept turns have their `issues` key stripped on output (no outstanding issues remain).
-- Final peak-limiting clips to 0.99 to avoid overflow when tail-boost + RMS normalization would otherwise clip.
-- Duration bounds default to `MIN_TURN_DURATION = 2.5 s` and `MAX_TURN_DURATION = 60 s`, matching the old finetune `MIN_EXPORT_DURATION` / `MAX_EXPORT_DURATION` that used to live in the finetune stage.
+- `FILE_REJECT_CODES` and `VALIDATION_TURN_CODES` are sourced from `voicetune.stages.validation.pipeline`.
+- Already-filtered calls are skipped (resume-safe: presence of `{call_id}/dialogue.json` in the output).
+- Kept turns have their `issues` key stripped on output.
+- Calls with fewer than 2 surviving turns are rejected with `single_turn`.
+- Duration defaults: `MIN_TURN_DURATION = 3.0 s`, `MAX_TURN_DURATION = 30.0 s`. Finetune reads `output/filtered/` as-is.
 
 ## Dependencies
 

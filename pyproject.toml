@@ -8,7 +8,7 @@ include = ["voicetune*"]
 [project]
 name = "voicetune"
 version = "0.1.0"
-requires-python = ">=3.12"
+requires-python = ">=3.11"
 dependencies = [
     "av==17.0.0",
     "soundfile==0.13.1",
@@ -31,15 +31,16 @@ local = [
     "whisperx>=3.8",
     "mlx-whisper>=0.4; sys_platform == 'darwin'",
 ]
-aws = [
-    "boto3>=1.38",
-]
 gcp = [
     "google-api-core>=2.24",
     "google-cloud-speech>=2.30",
     "google-cloud-storage>=2.19",
     "google-cloud-compute>=1.22",
 ]
+infer = [
+    "voxcpm>=2.0",
+    "gradio>=4.0",
+]
 all = [
-    "voicetune[local,aws,gcp]",
+    "voicetune[local,gcp,infer]",
 ]

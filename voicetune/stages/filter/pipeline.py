@@ -1,13 +1,13 @@
-"""Filter pipeline: the single place where turns and files get dropped."""
+"""Filter pipeline: drop unusable turns and files before labeling."""
 
 import json
 import logging
+import shutil
 from pathlib import Path
 
 import numpy as np
 import soundfile as sf
 
-from voicetune.common import write_wav
 from voicetune.stages.validation.pipeline import FILE_ISSUES, TURN_ISSUES, RejectReason
 
 log = logging.getLogger(__name__)
@@ -25,20 +25,19 @@ TAIL_DECAY_CODE = "tail_decay"
 TOO_SHORT_CODE = RejectReason.TOO_SHORT.value
 TOO_LONG_CODE = RejectReason.TOO_LONG.value
 
-MIN_TURN_DURATION = 2.5
-MAX_TURN_DURATION = 60.0
+MIN_TURN_DURATION = 3.0
+MAX_TURN_DURATION = 30.0
 
 SILENCE_RMS_DB = -40.0
 LOW_ENERGY_RMS_DB = -30.0
 
-TARGET_RMS_DBFS = -20.0
 MAX_TAIL_DECAY_DB = 5.0
-FADE_FRAME_MS = 30
+DECAY_FRAME_MS = 30
 SPEECH_FLOOR_DB = -30.0
 
 
-def _frame_rms_db(audio: np.ndarray, sr: int, frame_ms: int = FADE_FRAME_MS) -> np.ndarray:
-    frame = max(1, int(sr * frame_ms / 1000))
+def _frame_rms_db(audio: np.ndarray, sr: int) -> np.ndarray:
+    frame = max(1, int(sr * DECAY_FRAME_MS / 1000))
     n = (len(audio) // frame) * frame
     if n < frame:
         return np.array([])
@@ -47,68 +46,37 @@ def _frame_rms_db(audio: np.ndarray, sr: int, frame_ms: int = FADE_FRAME_MS) -> 
     return 20 * np.log10(rms + 1e-12)
 
 
-def audio_quality_issue(audio: np.ndarray) -> str | None:
+def audio_issue(audio: np.ndarray, sr: int) -> str | None:
+    """Return a drop-reason code if the clip is unusable for training, else None.
+
+    Clips that pass are copied as-is; preprocess already normalized loudness.
+    """
     if len(audio) == 0:
         return MOSTLY_SILENCE_CODE
-    rms = float(np.sqrt(np.mean(audio ** 2) + 1e-10))
-    rms_db = 20 * np.log10(rms + 1e-12)
+    rms_db = 20 * np.log10(float(np.sqrt(np.mean(audio ** 2) + 1e-10)) + 1e-12)
     if rms_db < SILENCE_RMS_DB:
         return MOSTLY_SILENCE_CODE
     if rms_db < LOW_ENERGY_RMS_DB:
         return LOW_ENERGY_CODE
+
+    frames_db = _frame_rms_db(audio, sr)
+    if len(frames_db) < 10:
+        return MOSTLY_SILENCE_CODE
+    speech = frames_db > SPEECH_FLOOR_DB
+    if speech.sum() < 10:
+        return MOSTLY_SILENCE_CODE
+    t1 = len(frames_db) // 3
+    t2 = 2 * len(frames_db) // 3
+    first = frames_db[:t1][speech[:t1]]
+    last = frames_db[t2:][speech[t2:]]
+    if first.size == 0 or last.size == 0:
+        return MOSTLY_SILENCE_CODE
+    if float(first.mean() - last.mean()) > MAX_TAIL_DECAY_DB:
+        return TAIL_DECAY_CODE
     return None
 
 
-def clean_clip(audio: np.ndarray, sr: int) -> np.ndarray | None:
-    # Phone-call turns often trail off in volume; leaving this in teaches the
-    # fine-tune to generate fading audio. Measure first-third vs last-third
-    # RMS among speech frames, drop the clip if the decay is unrepairable,
-    # or apply a ramped tail boost to flatten the envelope before normalizing.
-    x = audio.astype(np.float32, copy=True)
-    rms_db = _frame_rms_db(x, sr)
-    if len(rms_db) < 10:
-        return None
-
-    speech = rms_db > SPEECH_FLOOR_DB
-    if speech.sum() < 10:
-        return None
-
-    t1 = len(rms_db) // 3
-    t2 = 2 * len(rms_db) // 3
-    first = rms_db[:t1][speech[:t1]]
-    last = rms_db[t2:][speech[t2:]]
-    if first.size == 0 or last.size == 0:
-        return None
-    decay_db = float(first.mean() - last.mean())
-    if decay_db > MAX_TAIL_DECAY_DB:
-        return None
-
-    frame = max(1, int(sr * FADE_FRAME_MS / 1000))
-    if decay_db > 1.0:
-        gain_db = np.zeros(len(rms_db))
-        gain_db[t1:] = np.linspace(0.0, decay_db, len(rms_db) - t1)
-        gain = 10 ** (gain_db / 20)
-        gain_samples = np.interp(
-            np.arange(len(x)),
-            np.arange(len(gain)) * frame + frame // 2,
-            gain,
-            left=gain[0], right=gain[-1],
-        )
-        x = x * gain_samples.astype(np.float32)
-
-    rms_final = float(np.sqrt((x ** 2).mean() + 1e-12))
-    target_linear = 10 ** (TARGET_RMS_DBFS / 20)
-    x = x * (target_linear / rms_final)
-
-    peak = float(np.abs(x).max())
-    if peak > 0.99:
-        x = x * (0.99 / peak)
-
-    return x.astype(np.float32)
-
-
-def _load_turn(segmented_call_dir: Path, turn: dict) -> tuple[np.ndarray, int] | None:
-    wav_path = segmented_call_dir / turn["audio_path"]
+def _load_audio(wav_path: Path) -> tuple[np.ndarray, int] | None:
     if not wav_path.exists():
         log.warning(f"    missing audio: {wav_path}")
         return None
@@ -157,7 +125,7 @@ def process_call(
             return _reject_file(call_id, file_reasons, original_count, output_dir)
 
     removed_counts: dict[str, int] = {}
-    kept_final: list[tuple[dict, np.ndarray, int]] = []
+    kept: list[tuple[dict, Path]] = []
 
     for turn in turns:
         validation_codes = [c for c in turn.get("issues", []) if c in VALIDATION_TURN_CODES]
@@ -174,36 +142,36 @@ def process_call(
             removed_counts[TOO_LONG_CODE] = removed_counts.get(TOO_LONG_CODE, 0) + 1
             continue
 
-        got = _load_turn(segmented_call_dir, turn)
-        if got is None:
+        src_wav = segmented_call_dir / turn["audio_path"]
+        loaded = _load_audio(src_wav)
+        if loaded is None:
             continue
-        audio, sr = got
+        audio, sr = loaded
 
-        issue = audio_quality_issue(audio)
+        issue = audio_issue(audio, sr)
         if issue:
             removed_counts[issue] = removed_counts.get(issue, 0) + 1
             continue
 
-        cleaned = clean_clip(audio, sr)
-        if cleaned is None:
-            removed_counts[TAIL_DECAY_CODE] = removed_counts.get(TAIL_DECAY_CODE, 0) + 1
-            continue
+        kept.append((turn, src_wav))
 
-        kept_final.append((turn, cleaned, sr))
-
-    if not kept_final:
+    if not kept:
         log.warning(f"  {call_id}: all {original_count} turns removed")
         return _reject_file(call_id, ["all_turns_filtered"], original_count, output_dir)
+
+    if len(kept) < 2:
+        log.warning(f"  {call_id}: only {len(kept)} turn kept, dropping call")
+        return _reject_file(call_id, ["single_turn"], original_count, output_dir)
 
     call_output_dir = output_dir / call_id
     call_output_dir.mkdir(parents=True, exist_ok=True)
     (call_output_dir / "turns").mkdir(exist_ok=True)
 
     out_turns: list[dict] = []
-    for turn, cleaned, sr in kept_final:
-        out_wav_path = call_output_dir / turn["audio_path"]
-        out_wav_path.parent.mkdir(parents=True, exist_ok=True)
-        write_wav(out_wav_path, cleaned, sr)
+    for turn, src_wav in kept:
+        dst_wav = call_output_dir / turn["audio_path"]
+        dst_wav.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(str(src_wav), str(dst_wav))
         out_turn = {k: v for k, v in turn.items() if k != "issues"}
         out_turns.append(out_turn)
 

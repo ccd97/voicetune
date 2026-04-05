@@ -10,12 +10,15 @@ log = logging.getLogger(__name__)
 
 
 def main():
+    from dotenv import load_dotenv
+
     from voicetune.common import setup_logging
 
+    load_dotenv()
     setup_logging()
 
     parser = argparse.ArgumentParser(
-        description="Prepare dataset and fine-tune Fish Speech S2 Pro via cloud GPU"
+        description="Prepare dataset and fine-tune VoxCPM2 via GCP A100 VM"
     )
     parser.add_argument(
         "--run-dir", type=Path, default=Path("./output"),
@@ -31,15 +34,25 @@ def main():
     )
     parser.add_argument(
         "--data-dir", type=Path, default=None,
-        help="Directory for prepared wav+lab dataset (default: <run-dir>/fish-speech/data)"
+        help="Directory for prepared jsonl+wav dataset (default: <run-dir>/voxcpm/data)"
     )
     parser.add_argument(
         "--no-prepare", action="store_true",
         help="Skip dataset preparation (use existing data in data-dir)"
     )
     parser.add_argument(
-        "--max-steps", type=int, default=800,
-        help="Training steps (default: 800)"
+        "--max-steps", type=int, default=200,
+        help="Training steps (default: 200, ~3 epochs at 1k clips)"
+    )
+    parser.add_argument(
+        "--max-turns-per-call", type=int, default=50,
+        help="Per-call turn cap (default: 50)"
+    )
+    parser.add_argument(
+        "--keep-languages", type=str, default=None,
+        help="Comma-separated list of language buckets to keep "
+             "(english, hindi, marathi, mixed, devanagari_unknown, other). "
+             "Example: --keep-languages english,hindi. Default: keep all."
     )
     parser.add_argument(
         "--test", action="store_true",
@@ -49,10 +62,6 @@ def main():
         "--output-dir", type=Path, default=None,
         help="Where to download finetuned model (default: <run-dir>/finetune)"
     )
-    parser.add_argument(
-        "--provider", choices=["gcp", "aws"], default="gcp",
-        help="Cloud provider for fine-tuning (default: gcp)"
-    )
     args = parser.parse_args()
 
     if args.labeled_dir is None:
@@ -60,9 +69,13 @@ def main():
     if args.filtered_dir is None:
         args.filtered_dir = args.run_dir / "filtered"
     if args.data_dir is None:
-        args.data_dir = args.run_dir / "fish-speech" / "data"
+        args.data_dir = args.run_dir / "voxcpm" / "data"
     if args.output_dir is None:
         args.output_dir = args.run_dir / "finetune"
+
+    keep_languages: set[str] | None = None
+    if args.keep_languages:
+        keep_languages = {s.strip() for s in args.keep_languages.split(",") if s.strip()}
 
     if not args.no_prepare:
         log.info(f"Preparing dataset from {args.labeled_dir}")
@@ -70,6 +83,8 @@ def main():
             labeled_dir=args.labeled_dir,
             filtered_dir=args.filtered_dir,
             output_dir=args.data_dir,
+            max_turns_per_call=args.max_turns_per_call,
+            keep_languages=keep_languages,
         )
 
     run_finetune(
@@ -77,7 +92,6 @@ def main():
         max_steps=args.max_steps,
         test=args.test,
         output_dir=args.output_dir,
-        provider=args.provider,
     )
 
 

@@ -1,54 +1,43 @@
-"""Training orchestrator for GCP VM.
+"""Training orchestrator for GCP VM (VoxCPM2 LoRA).
 
-Called by startup_gcp.sh after environment setup. Handles model download,
-data pull, VQ extraction, dataset build, LoRA training with retry, merge,
-and result upload. Reports status via GCE guest attributes.
+Called by startup.sh after environment setup. Downloads openbmb/VoxCPM2
+(GCS cache first, HuggingFace fallback), pulls the JSONL training manifest
+and wavs from GCS, renders a LoRA config YAML, runs VoxCPM's
+scripts/train_voxcpm_finetune.py, and uploads step checkpoints +
+tensorboard logs back to GCS. Reports status via GCE guest attributes.
 """
 
 import argparse
+import json
 import logging
 import os
 import re
 import subprocess
 import sys
+import threading
 import urllib.request
 import zipfile
 from pathlib import Path
 
+import yaml
 from google.cloud import storage
 
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(message)s", datefmt="%H:%M:%S")
 log = logging.getLogger(__name__)
 
-HF_REPO = "https://huggingface.co/fishaudio/s2-pro/resolve/main"
-HF_SMALL_FILES = [
-    "config.json", "chat_template.jinja", "LICENSE.md", "README.md",
-    "model.safetensors.index.json", "special_tokens_map.json",
-    "tokenizer_config.json", "tokenizer.json", "overview.png",
-]
-HF_LARGE_FILES = [
-    "codec.pth",
-    "model-00001-of-00002.safetensors",
-    "model-00002-of-00002.safetensors",
-]
+MODEL_REPO = "openbmb/VoxCPM2"
+MODEL_DIR_NAME = "VoxCPM2"
+MODEL_CACHE_PREFIX = "voxcpm2-base/"
 
-PROJECT = "my-voice"
-LORA_RANK = 8
-LORA_ALPHA = 16
-MAX_RETRIES = 3
+PROJECT = "me-lora"
+LORA_RANK = 64
+LORA_ALPHA = 128
+LEARNING_RATE = 5.0e-4
 
 GUEST_ATTR_URL = (
     "http://metadata.google.internal/computeMetadata/v1"
     "/instance/guest-attributes/voicetune/status"
 )
-
-
-def _run(cmd: list[str], cwd: Path | str | None = None, env: dict | None = None) -> None:
-    log.info(f"  Running: {' '.join(cmd)}")
-    run_env = {**os.environ, **(env or {})}
-    result = subprocess.run(cmd, cwd=str(cwd) if cwd else None, env=run_env)
-    if result.returncode != 0:
-        raise RuntimeError(f"Command failed (exit {result.returncode}): {' '.join(cmd[:3])}...")
 
 
 def _download_gcs_dir(bucket: storage.Bucket, prefix: str, local_dir: Path) -> int:
@@ -83,73 +72,170 @@ def set_status(status: str) -> None:
     urllib.request.urlopen(req)
 
 
-def download_model(bucket: storage.Bucket, fish_dir: Path) -> None:
-    ckpt_dir = fish_dir / "checkpoints" / "s2-pro"
-    ckpt_dir.mkdir(parents=True, exist_ok=True)
+def download_model(bucket: storage.Bucket, vox_dir: Path) -> Path:
+    model_dir = vox_dir / "models" / MODEL_DIR_NAME
+    model_dir.mkdir(parents=True, exist_ok=True)
 
-    if bucket.blob("s2-pro-base/codec.pth").exists():
-        log.info("Pulling model from GCS cache...")
-        _download_gcs_dir(bucket, "s2-pro-base/", ckpt_dir)
-        return
+    if bucket.blob(f"{MODEL_CACHE_PREFIX}config.json").exists():
+        log.info(f"Pulling {MODEL_DIR_NAME} from GCS cache...")
+        _download_gcs_dir(bucket, MODEL_CACHE_PREFIX, model_dir)
+        return model_dir
 
-    log.info("First run — downloading from HuggingFace via wget...")
-    for f in HF_SMALL_FILES:
-        log.info(f"  {f}")
-        _run(["wget", "-q", f"{HF_REPO}/{f}", "-O", f], cwd=ckpt_dir)
+    log.info(f"First run — downloading {MODEL_REPO} from HuggingFace...")
+    from huggingface_hub import snapshot_download
+    token = os.environ.get("HF_TOKEN") or None
+    snapshot_download(repo_id=MODEL_REPO, local_dir=str(model_dir), token=token)
 
-    for f in HF_LARGE_FILES:
-        log.info(f"  {f} (large file)...")
-        _run(["wget", "-q", f"{HF_REPO}/{f}", "-O", f], cwd=ckpt_dir)
-
-    log.info("Caching model to GCS...")
-    _upload_gcs_dir(bucket, ckpt_dir, "s2-pro-base/")
+    log.info(f"Caching model to gs://{bucket.name}/{MODEL_CACHE_PREFIX}...")
+    _upload_gcs_dir(bucket, model_dir, MODEL_CACHE_PREFIX)
+    return model_dir
 
 
-def pull_training_data(bucket: storage.Bucket, fish_dir: Path) -> None:
+def pull_training_data(bucket: storage.Bucket, vox_dir: Path) -> Path:
     log.info("Pulling training data from GCS...")
-    data_dir = fish_dir / "data"
+    data_dir = vox_dir / "data"
     data_dir.mkdir(parents=True, exist_ok=True)
-    zip_path = fish_dir / "training-data.zip"
+    zip_path = vox_dir / "training-data.zip"
     bucket.blob("training-data.zip").download_to_filename(str(zip_path))
     with zipfile.ZipFile(zip_path) as zf:
         zf.extractall(data_dir)
     zip_path.unlink()
     count = sum(1 for _ in data_dir.rglob("*") if _.is_file())
-    log.info(f"  Extracted {count} files")
+    log.info(f"  Extracted {count} files to {data_dir}")
+    return data_dir
 
 
-def extract_vq(fish_dir: Path, python: str) -> None:
-    log.info("Extracting semantic tokens...")
-    _run([
-        python, "tools/vqgan/extract_vq.py", "data",
-        "--num-workers", "1", "--batch-size", "4",
-        "--config-name", "modded_dac_vq",
-        "--checkpoint-path", "checkpoints/s2-pro/codec.pth",
-    ], cwd=fish_dir)
+def rewrite_manifest(manifest: Path, data_dir: Path) -> None:
+    """Rewrite absolute audio paths (from local prepare step) to VM paths.
+
+    prepare_dataset stamps absolute paths from the local machine into the
+    JSONL. On the VM those don't resolve, so replace them with paths under
+    data_dir based on the filename.
+    """
+    if not manifest.exists():
+        return
+    me_dir = data_dir / "me"
+    out = []
+    with manifest.open() as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            entry = json.loads(line)
+            name = Path(entry["audio"]).name
+            entry["audio"] = str(me_dir / name)
+            if "ref_audio" in entry:
+                entry["ref_audio"] = str(me_dir / Path(entry["ref_audio"]).name)
+            out.append(entry)
+    with manifest.open("w", encoding="utf-8") as f:
+        for entry in out:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    log.info(f"  Rewrote {len(out)} manifest entries in {manifest.name}")
 
 
-def build_dataset(fish_dir: Path, python: str) -> None:
-    log.info("Building dataset...")
-    _run([
-        python, "tools/llama/build_dataset.py",
-        "--input", "data", "--output", "data/protos",
-        "--text-extension", ".lab", "--num-workers", "1",
-    ], cwd=fish_dir)
+def render_config(vox_dir: Path, model_dir: Path, data_dir: Path, max_steps: int) -> Path:
+    save_path = vox_dir / "results" / PROJECT / "lora"
+    tb_path = vox_dir / "results" / PROJECT / "tensorboard"
+    val_manifest = data_dir / "val.jsonl"
+
+    cfg = {
+        "pretrained_path": str(model_dir),
+        "train_manifest": str(data_dir / "train.jsonl"),
+        "val_manifest": str(val_manifest) if val_manifest.exists() else "",
+        "sample_rate": 16000,
+        "out_sample_rate": 48000,
+        "batch_size": 1,
+        "grad_accum_steps": 16,
+        "num_workers": 4,
+        "num_iters": max_steps,
+        "max_steps": max_steps,
+        "log_interval": 10,
+        "valid_interval": max(1, min(50, max_steps)),
+        "save_interval": max(1, min(50, max_steps)),
+        "learning_rate": LEARNING_RATE,
+        "weight_decay": 0.01,
+        "warmup_steps": max(1, max_steps // 10),
+        "max_batch_tokens": 8192,
+        "max_grad_norm": 1.0,
+        "save_path": str(save_path),
+        "tensorboard": str(tb_path),
+        "lambdas": {"loss/diff": 1.0, "loss/stop": 1.0},
+        "lora": {
+            "enable_lm": True,
+            "enable_dit": True,
+            "enable_proj": True,
+            "r": LORA_RANK,
+            "alpha": LORA_ALPHA,
+            "dropout": 0.0,
+        },
+        # Portable adapter: stamp the HF repo id (not the VM-local path) into lora_config.json.
+        "hf_model_id": MODEL_REPO,
+        "distribute": True,
+    }
+    conf_dir = vox_dir / "conf"
+    conf_dir.mkdir(parents=True, exist_ok=True)
+    path = conf_dir / "me_lora.yaml"
+    path.write_text(yaml.safe_dump(cfg, sort_keys=False))
+    log.info(f"Rendered config to {path}")
+    return path
 
 
-def find_latest_checkpoint(results_dir: Path) -> Path | None:
-    ckpts = sorted(
-        results_dir.glob("step_*.ckpt"),
-        key=lambda p: int(re.search(r"step_(\d+)", p.stem).group(1)),
+def _find_step_dirs(save_path: Path) -> list[Path]:
+    if not save_path.exists():
+        return []
+    return sorted(
+        (d for d in save_path.iterdir() if d.is_dir() and d.name.startswith("step_")),
+        key=lambda d: int(re.search(r"step_(\d+)", d.name).group(1)),
     )
-    return ckpts[-1] if ckpts else None
 
 
-def find_best_checkpoint(results_dir: Path) -> Path | None:
-    # S2 Pro overfits the text branch fast, so the last checkpoint is usually
-    # worse than an earlier one. Read val/loss from TensorBoard events and
-    # pick the checkpoint with the lowest val/loss.
-    tb_dir = results_dir.parent / "tensorboard"
+def _step_dir_complete(step_dir: Path) -> bool:
+    weights_present = (
+        (step_dir / "lora_weights.safetensors").exists()
+        or (step_dir / "lora_weights.ckpt").exists()
+    )
+    return weights_present and (step_dir / "lora_config.json").exists()
+
+
+def _watch_and_upload_checkpoints(
+    bucket: storage.Bucket,
+    save_path: Path,
+    prefix: str,
+    stop_event: threading.Event,
+    interval: float = 15.0,
+) -> None:
+    """Mirror each completed step_* dir to GCS. latest/ is handled in the final sweep."""
+    uploaded: set[str] = set()
+    while not stop_event.is_set():
+        try:
+            for step_dir in _find_step_dirs(save_path):
+                if step_dir.name in uploaded or not _step_dir_complete(step_dir):
+                    continue
+                step_prefix = f"{prefix}{step_dir.name}/"
+                try:
+                    n = _upload_gcs_dir(bucket, step_dir, step_prefix)
+                    uploaded.add(step_dir.name)
+                    log.info(f"  [ckpt-sync] uploaded {step_dir.name} ({n} files)")
+                except Exception as e:
+                    log.warning(f"  [ckpt-sync] failed to upload {step_dir.name}: {e}")
+        except Exception as e:
+            log.warning(f"  [ckpt-sync] watcher error: {e}")
+        stop_event.wait(interval)
+
+
+def find_latest_step(save_path: Path) -> Path | None:
+    dirs = _find_step_dirs(save_path)
+    return dirs[-1] if dirs else None
+
+
+VAL_LOSS_TAG = "val/loss/total"
+
+
+def find_best_step(save_path: Path, tb_dir: Path) -> Path | None:
+    """Pick the step dir with the lowest val/loss/total; fall back to the latest step."""
+    dirs = _find_step_dirs(save_path)
+    if not dirs:
+        return None
     try:
         from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
         events = sorted(tb_dir.rglob("events.out.tfevents.*"))
@@ -157,21 +243,20 @@ def find_best_checkpoint(results_dir: Path) -> Path | None:
         for ev_path in events:
             ea = EventAccumulator(str(ev_path.parent), size_guidance={"scalars": 0})
             ea.Reload()
-            if "val/loss" not in ea.Tags().get("scalars", []):
+            if VAL_LOSS_TAG not in ea.Tags().get("scalars", []):
                 continue
-            for ev in ea.Scalars("val/loss"):
+            for ev in ea.Scalars(VAL_LOSS_TAG):
                 step_to_loss[ev.step] = ev.value
     except Exception as e:
-        log.warning(f"Could not read TensorBoard val/loss ({e}); using latest checkpoint")
-        return find_latest_checkpoint(results_dir)
+        log.warning(f"Could not read TensorBoard {VAL_LOSS_TAG} ({e}); using latest step")
+        return dirs[-1]
 
     if not step_to_loss:
-        return find_latest_checkpoint(results_dir)
+        return dirs[-1]
 
-    ckpts = list(results_dir.glob("step_*.ckpt"))
     best: tuple[float, Path] | None = None
-    for ckpt in ckpts:
-        step = int(re.search(r"step_(\d+)", ckpt.stem).group(1))
+    for d in dirs:
+        step = int(re.search(r"step_(\d+)", d.name).group(1))
         loss = step_to_loss.get(step)
         if loss is None:
             nearby = [(abs(s - step), l) for s, l in step_to_loss.items() if abs(s - step) <= 10]
@@ -179,116 +264,95 @@ def find_best_checkpoint(results_dir: Path) -> Path | None:
                 continue
             loss = min(nearby)[1]
         if best is None or loss < best[0]:
-            best = (loss, ckpt)
+            best = (loss, d)
 
     if best is None:
-        return find_latest_checkpoint(results_dir)
-    log.info(f"Best checkpoint by val/loss: {best[1].name} (loss={best[0]:.4f})")
+        return dirs[-1]
+    log.info(f"Best step by {VAL_LOSS_TAG}: {best[1].name} (loss={best[0]:.4f})")
     return best[1]
 
 
-def train_lora(fish_dir: Path, python: str, max_steps: int) -> Path:
-    lora_config = f"r_{LORA_RANK}_alpha_{LORA_ALPHA}"
-    cmd = [
-        python, "fish_speech/train.py",
-        "--config-name", "text2semantic_finetune",
-        f"project={PROJECT}",
-        "pretrained_ckpt_path=checkpoints/s2-pro",
-        "tokenizer.model_path=checkpoints/s2-pro",
-        f"+lora@model.model.lora_config={lora_config}",
-        f"trainer.max_steps={max_steps}",
-        "trainer.val_check_interval=50",
-        "data.batch_size=8",
-        "max_length=1024",
-        "model.optimizer.lr=5e-5",
-        "callbacks.model_checkpoint.monitor=val/loss",
-        "callbacks.model_checkpoint.mode=min",
-        "callbacks.model_checkpoint.save_top_k=5",
-    ]
-    if max_steps < 100:
-        cmd.append(f"callbacks.model_checkpoint.every_n_train_steps={max_steps}")
+def train(vox_dir: Path, python: str, config_path: Path, bucket: storage.Bucket) -> Path:
+    save_path = vox_dir / "results" / PROJECT / "lora"
+
+    stop_event = threading.Event()
+    watcher = threading.Thread(
+        target=_watch_and_upload_checkpoints,
+        args=(bucket, save_path, "results/lora/", stop_event),
+        daemon=True,
+    )
+    watcher.start()
+    log.info("Started background checkpoint sync to GCS (results/lora/)")
 
     train_env = {
-        "WANDB_MODE": "disabled",
+        **os.environ,
         "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
-        "HYDRA_FULL_ERROR": "1",
+        "WANDB_MODE": "disabled",
     }
-    results_dir = fish_dir / "results" / PROJECT / "checkpoints"
+    cmd = [python, "scripts/train_voxcpm_finetune.py", "--config_path", str(config_path)]
+    log.info(f"  Running: {' '.join(cmd)}")
+    result = subprocess.run(cmd, cwd=str(vox_dir), env=train_env)
 
-    for attempt in range(1, MAX_RETRIES + 1):
-        run_cmd = list(cmd)
-        ckpt = find_latest_checkpoint(results_dir) if results_dir.exists() else None
-        if ckpt:
-            log.info(f"Resuming from {ckpt.name} (attempt {attempt}/{MAX_RETRIES})")
-            run_cmd.append(f"ckpt_path={ckpt}")
+    stop_event.set()
+    watcher.join(timeout=60)
 
-        run_env = {**os.environ, **train_env}
-        result = subprocess.run(run_cmd, cwd=str(fish_dir), env=run_env)
-        if result.returncode == 0:
-            break
-        log.error(f"Training failed (exit {result.returncode}), attempt {attempt}/{MAX_RETRIES}")
-        if attempt == MAX_RETRIES:
-            raise RuntimeError(f"Training failed after {MAX_RETRIES} attempts")
+    if result.returncode != 0:
+        raise RuntimeError(f"Training failed (exit {result.returncode})")
 
-    ckpt = find_best_checkpoint(results_dir)
-    if not ckpt:
-        raise RuntimeError(f"No checkpoint found in {results_dir}")
-    return ckpt
+    if save_path.exists():
+        for step_dir in _find_step_dirs(save_path):
+            _upload_gcs_dir(bucket, step_dir, f"results/lora/{step_dir.name}/")
+        latest = save_path / "latest"
+        if latest.exists():
+            _upload_gcs_dir(bucket, latest, "results/lora/latest/")
+            log.info("  [ckpt-sync] final latest/ upload")
 
-
-def merge_lora(fish_dir: Path, python: str, checkpoint: Path) -> None:
-    log.info(f"Merging LoRA weights from {checkpoint.name}...")
-    _run([
-        python, "tools/llama/merge_lora.py",
-        "--lora-config", f"r_{LORA_RANK}_alpha_{LORA_ALPHA}",
-        "--base-weight", "checkpoints/s2-pro",
-        "--lora-weight", str(checkpoint),
-        "--output", "checkpoints/s2-pro-finetuned/",
-    ], cwd=fish_dir)
+    tb_dir = vox_dir / "results" / PROJECT / "tensorboard"
+    best = find_best_step(save_path, tb_dir) or find_latest_step(save_path)
+    if not best:
+        raise RuntimeError(f"No step checkpoints found in {save_path}")
+    return best
 
 
-def upload_results(bucket: storage.Bucket, fish_dir: Path) -> None:
-    log.info("Uploading finetuned model to GCS...")
-    n = _upload_gcs_dir(bucket, fish_dir / "checkpoints" / "s2-pro-finetuned", "model/")
-    log.info(f"  Uploaded {n} model files")
-    n = _upload_gcs_dir(bucket, fish_dir / "results" / PROJECT, "results/")
-    log.info(f"  Uploaded {n} result files")
+def upload_results(bucket: storage.Bucket, vox_dir: Path) -> None:
+    log.info("Uploading tensorboard logs to GCS...")
+    tb_dir = vox_dir / "results" / PROJECT / "tensorboard"
+    if tb_dir.exists():
+        n = _upload_gcs_dir(bucket, tb_dir, "results/tensorboard/")
+        log.info(f"  Uploaded {n} tensorboard files")
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--bucket", required=True)
-    parser.add_argument("--max-steps", type=int, default=800)
-    parser.add_argument("--fish-dir", type=Path, default=Path("/opt/fish-speech"))
+    parser.add_argument("--max-steps", type=int, default=500)
+    parser.add_argument("--vox-dir", type=Path, default=Path("/opt/voxcpm"))
     args = parser.parse_args()
 
     bucket_name = args.bucket.removeprefix("gs://")
     bucket = storage.Client().bucket(bucket_name)
-    python = str(args.fish_dir / ".venv" / "bin" / "python")
+    python = str(args.vox_dir / ".venv" / "bin" / "python")
 
     try:
         set_status("MODEL_DOWNLOADING")
-        download_model(bucket, args.fish_dir)
+        model_dir = download_model(bucket, args.vox_dir)
         set_status("MODEL_DOWNLOADED")
 
-        pull_training_data(bucket, args.fish_dir)
+        data_dir = pull_training_data(bucket, args.vox_dir)
+        rewrite_manifest(data_dir / "train.jsonl", data_dir)
+        rewrite_manifest(data_dir / "val.jsonl", data_dir)
         set_status("DATA_READY")
 
-        extract_vq(args.fish_dir, python)
-        set_status("VQ_DONE")
-
-        build_dataset(args.fish_dir, python)
-        set_status("DATASET_BUILT")
+        config_path = render_config(args.vox_dir, model_dir, data_dir, args.max_steps)
+        set_status("CONFIG_READY")
 
         set_status("TRAINING")
-        log.info(f"Starting LoRA training (max_steps={args.max_steps})...")
-        checkpoint = train_lora(args.fish_dir, python, args.max_steps)
+        log.info(f"Starting VoxCPM2 LoRA training (max_steps={args.max_steps})...")
+        best_step = train(args.vox_dir, python, config_path, bucket=bucket)
+        log.info(f"Training done. Best step: {best_step.name}")
         set_status("TRAINING_DONE")
 
-        merge_lora(args.fish_dir, python, checkpoint)
-        set_status("MERGE_DONE")
-
-        upload_results(bucket, args.fish_dir)
+        upload_results(bucket, args.vox_dir)
         set_status("COMPLETE")
     except Exception as e:
         log.exception("Training failed")

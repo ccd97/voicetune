@@ -1,8 +1,9 @@
-"""GCP-based Fish Speech S2 Pro LoRA fine-tuning.
+"""GCP-based VoxCPM2 LoRA fine-tuning.
 
-Uploads training data to GCS, launches an A100 VM that runs the full
-Fish Speech pipeline (VQ extraction -> dataset build -> LoRA train -> merge),
-monitors progress via guest attributes, and downloads the finetuned model.
+Uploads training data to GCS, launches an A100 VM that downloads
+openbmb/VoxCPM2 and runs scripts/train_voxcpm_finetune.py against a
+JSONL manifest, monitors progress via guest attributes, and downloads
+the LoRA adapter + checkpoints when complete.
 """
 
 import logging
@@ -42,6 +43,18 @@ def ensure_bucket(bucket: storage.Bucket) -> None:
         return
     log.info(f"Creating bucket {BUCKET_NAME}...")
     bucket.client.create_bucket(bucket, location="us")
+
+
+def cleanup_previous_results(bucket: storage.Bucket) -> None:
+    """Wipe results/ from the prior run so stale checkpoints don't leak into the download."""
+    blobs = list(bucket.client.list_blobs(bucket, prefix="results/"))
+    if not blobs:
+        log.info("No previous results/ in gs://%s to clean up", BUCKET_NAME)
+        return
+    log.info(f"Deleting {len(blobs)} previous result blobs from gs://{BUCKET_NAME}/results/...")
+    with bucket.client.batch():
+        for blob in blobs:
+            blob.delete()
 
 
 def upload_data(bucket: storage.Bucket, data_dir: Path) -> None:
@@ -113,6 +126,7 @@ def _build_instance(
         metadata=compute_v1.Metadata(items=[
             compute_v1.Items(key="MAX_STEPS", value=str(max_steps)),
             compute_v1.Items(key="BUCKET", value=BUCKET_URI),
+            compute_v1.Items(key="HF_TOKEN", value=os.environ.get("HF_TOKEN", "")),
             compute_v1.Items(key="enable-guest-attributes", value="TRUE"),
             compute_v1.Items(key="startup-script", value=startup_content),
         ]),
@@ -151,11 +165,14 @@ def create_instance(
 def poll_status(
     compute: compute_v1.InstancesClient, project: str, instance: str, zone: str,
 ) -> str:
+    # query_path isn't in the flattened kwargs for get_guest_attributes in
+    # google-cloud-compute >=1.20; pass it via a request object instead.
+    request = compute_v1.GetGuestAttributesInstanceRequest(
+        project=project, zone=zone, instance=instance,
+        query_path="voicetune/status",
+    )
     try:
-        result = compute.get_guest_attributes(
-            project=project, zone=zone, instance=instance,
-            query_path="voicetune/status",
-        )
+        result = compute.get_guest_attributes(request=request)
         if result.query_value and result.query_value.items:
             return result.query_value.items[0].value
         return "PENDING"
@@ -165,7 +182,8 @@ def poll_status(
             return "PENDING"
         except NotFound:
             return "VM_GONE"
-    except Exception:
+    except Exception as e:
+        log.warning(f"Guest attribute poll failed: {type(e).__name__}: {e}")
         return "PENDING"
 
 
@@ -179,18 +197,38 @@ def delete_instance(
         pass
 
 
-def download_model(bucket: storage.Bucket, output_dir: Path) -> Path:
-    model_dir = output_dir / "s2-pro-finetuned"
-    model_dir.mkdir(parents=True, exist_ok=True)
-    log.info(f"Downloading finetuned model to {model_dir}...")
-    for blob in bucket.client.list_blobs(bucket, prefix="model/"):
+def _download_prefix(bucket: storage.Bucket, prefix: str, local_dir: Path) -> int:
+    local_dir.mkdir(parents=True, exist_ok=True)
+    count = 0
+    for blob in bucket.client.list_blobs(bucket, prefix=prefix):
         if blob.name.endswith("/"):
             continue
-        rel = blob.name.removeprefix("model/")
-        local_path = model_dir / rel
+        rel = blob.name[len(prefix):]
+        local_path = local_dir / rel
         local_path.parent.mkdir(parents=True, exist_ok=True)
         blob.download_to_filename(str(local_path))
-    return model_dir
+        count += 1
+    return count
+
+
+def download_results(bucket: storage.Bucket, output_dir: Path) -> Path:
+    """Download LoRA adapter checkpoints and tensorboard logs.
+
+    VoxCPM saves each checkpoint as a directory (step_NNNNNNN/ containing
+    lora_weights.safetensors + lora_config.json), not a single file. We mirror
+    everything under results/lora/ to {output_dir}/voxcpm2-lora/.
+    """
+    lora_dir = output_dir / "voxcpm2-lora"
+    log.info(f"Downloading LoRA adapter checkpoints to {lora_dir}...")
+    n = _download_prefix(bucket, "results/lora/", lora_dir)
+    log.info(f"  Downloaded {n} LoRA files")
+
+    tb_dir = output_dir / "tensorboard"
+    n = _download_prefix(bucket, "results/tensorboard/", tb_dir)
+    if n:
+        log.info(f"Downloaded {n} tensorboard files to {tb_dir}/")
+
+    return lora_dir
 
 
 def run(
@@ -206,12 +244,13 @@ def run(
 
     if test:
         max_steps = 1
-        log.info("=== TEST MODE: A100 SPOT, 1 step ===")
+        log.info("Test mode: A100 spot, 1 step")
 
     log.info(f"GCP finetune — project: {project}, machine: {MACHINE_TYPE} ({ACCELERATOR}), steps: {max_steps}")
     log.info(f"Training data: {data_dir}")
 
     ensure_bucket(bucket)
+    cleanup_previous_results(bucket)
     upload_data(bucket, data_dir)
     upload_train_script(bucket)
     cleanup_existing(compute, project, instance)
@@ -221,17 +260,24 @@ def run(
     log.info(f"  Serial log: gcloud compute instances get-serial-port-output {instance} --zone={zone} --project={project}")
 
     prev_status = ""
+    status_since = time.monotonic()
     while True:
         status = poll_status(compute, project, instance, zone)
+        now = time.monotonic()
         if status != prev_status:
             log.info(f"Status: {status}")
             prev_status = status
+            status_since = now
+        else:
+            elapsed = int(now - status_since)
+            mins, secs = divmod(elapsed, 60)
+            log.info(f"Status: {status} ({mins}m{secs:02d}s)")
 
         if status == "COMPLETE":
             log.info("Training complete!")
-            model_dir = download_model(bucket, output_dir)
+            lora_dir = download_results(bucket, output_dir)
             delete_instance(compute, project, instance, zone)
-            return {"status": "complete", "model": str(model_dir)}
+            return {"status": "complete", "lora": str(lora_dir)}
 
         if status.startswith("FAILED"):
             raise RuntimeError(f"Training failed: {status}")

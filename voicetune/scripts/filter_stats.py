@@ -70,29 +70,20 @@ BOX_WIDTH = 60
 INNER = BOX_WIDTH - 4  # space between "│ " and " │"
 
 
-def _box_top():
-    print("┌" + "─" * (BOX_WIDTH - 2) + "┐")
+def _box_edge(left: str, right: str) -> None:
+    print(left + "─" * (BOX_WIDTH - 2) + right)
 
 
-def _box_mid():
-    print("├" + "─" * (BOX_WIDTH - 2) + "┤")
-
-
-def _box_bot():
-    print("└" + "─" * (BOX_WIDTH - 2) + "┘")
-
-
-def _box_title(text: str):
+def _box_line(text: str) -> None:
     print(f"│ {text:<{INNER}} │")
 
 
-def _box_rows(rows: list[tuple[str, str]]):
+def _box_rows(rows: list[tuple[str, str]]) -> None:
     if not rows:
         return
     label_w = max(len(label) for label, _ in rows)
     for label, value in rows:
-        content = f"{label:<{label_w}}  {value}"
-        print(f"│ {content:<{INNER}} │")
+        _box_line(f"{label:<{label_w}}  {value}")
 
 
 @dataclass
@@ -324,13 +315,38 @@ def _summarize_label(labeled_root: Path, audio_root: Path) -> StageSummary:
     return summary
 
 
+def _read_jsonl(path: Path) -> list[dict]:
+    entries: list[dict] = []
+    with path.open() as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            entries.append(json.loads(line))
+    return entries
+
+
 def _summarize_finetune(data_root: Path) -> StageSummary:
     me_dir = data_root / "me"
     wavs = sorted(me_dir.glob("*.wav")) if me_dir.is_dir() else []
-    labs = sorted(me_dir.glob("*.lab")) if me_dir.is_dir() else []
-    summary = StageSummary("finetune", files=len(wavs), accepted=len(wavs), total_turns=len(labs))
+
+    train_manifest = data_root / "train.jsonl"
+    val_manifest = data_root / "val.jsonl"
+    train_entries = _read_jsonl(train_manifest) if train_manifest.exists() else []
+    val_entries = _read_jsonl(val_manifest) if val_manifest.exists() else []
+    manifest_entries = train_entries + val_entries
+
+    summary = StageSummary(
+        "finetune",
+        files=len(wavs),
+        accepted=len(wavs),
+        total_turns=len(manifest_entries),
+    )
     summary.total_audio_bytes = sum(p.stat().st_size for p in wavs)
-    summary.total_turn_chars = sum(len(p.read_text()) for p in labs)
+    summary.total_turn_chars = sum(len(e.get("text", "")) for e in manifest_entries)
+    summary.total_duration = sum(
+        float(e["duration"]) for e in manifest_entries if isinstance(e.get("duration"), (int, float))
+    )
 
     summary_path = data_root / "export_summary.json"
     if summary_path.exists():
@@ -339,15 +355,19 @@ def _summarize_finetune(data_root: Path) -> StageSummary:
         summary.extra.append(("calls", f"{len(calls):,}"))
         summary.extra.append(("skipped other", f"{sum(c.get('skipped_other', 0) for c in calls):,}"))
 
-    try:
-        import soundfile as sf
-        dur = 0.0
-        for wav in wavs:
-            info = sf.info(str(wav))
-            dur += info.frames / info.samplerate
-        summary.total_duration = dur
-    except ImportError:
-        pass
+    if train_entries or val_entries:
+        summary.extra.append(("train/val", f"{len(train_entries):,} / {len(val_entries):,}"))
+
+    if summary.total_duration == 0.0 and wavs:
+        try:
+            import soundfile as sf
+            dur = 0.0
+            for wav in wavs:
+                info = sf.info(str(wav))
+                dur += info.frames / info.samplerate
+            summary.total_duration = dur
+        except ImportError:
+            pass
 
     if wavs:
         summary.extra.append(("avg wav", _fmt_bytes(summary.total_audio_bytes / len(wavs))))
@@ -355,17 +375,17 @@ def _summarize_finetune(data_root: Path) -> StageSummary:
 
 
 def _print_summary(summary: StageSummary) -> None:
-    _box_top()
-    _box_title(f"\033[1m{summary.name.upper()}\033[0m")
+    _box_edge("┌", "┐")
+    _box_line(f"\033[1m{summary.name.upper()}\033[0m")
 
     if summary.files == 0:
-        _box_mid()
-        _box_title("no output found")
-        _box_bot()
+        _box_edge("├", "┤")
+        _box_line("no output found")
+        _box_edge("└", "┘")
         print()
         return
 
-    _box_mid()
+    _box_edge("├", "┤")
 
     rows: list[tuple[str, str]] = [("files", f"{summary.files:,}")]
 
@@ -393,15 +413,15 @@ def _print_summary(summary: StageSummary) -> None:
     _box_rows(rows)
 
     if summary.extra:
-        _box_mid()
+        _box_edge("├", "┤")
         _box_rows(summary.extra)
 
     if summary.languages:
-        _box_mid()
-        _box_title("languages")
+        _box_edge("├", "┤")
+        _box_line("languages")
         _box_rows(summary.languages)
 
-    _box_bot()
+    _box_edge("└", "┘")
     print()
 
 
@@ -424,7 +444,7 @@ def main() -> None:
         "segment": lambda: _summarize_segment(args.run_dir / "segmented"),
         "filter": lambda: _summarize_filter(args.run_dir / "filtered"),
         "label": lambda: _summarize_label(args.run_dir / "labeled", args.run_dir / "filtered"),
-        "finetune": lambda: _summarize_finetune(args.run_dir / "fish-speech" / "data"),
+        "finetune": lambda: _summarize_finetune(args.run_dir / "voxcpm" / "data"),
     }
 
     for stage in stages:

@@ -8,7 +8,8 @@ Pipeline steps:
     5. filter      — remove flagged turns, reject files with file-level issues
     6. segment     — merge turns, cut per-turn audio
     7. label       — identify 'me' vs 'other' via voiceprint + prepare dataset
-    8. finetune    — LoRA fine-tune Fish Speech S2 Pro
+    8. finetune    — LoRA fine-tune VoxCPM2
+    9. infer       — local Gradio UI for base + LoRA inference
 """
 
 from voicetune.common import TARGET_SR, merge_segments_to_turns, write_wav

@@ -1,4 +1,4 @@
-"""One-click pipeline: preprocess → diarize → scrub → validation → segment → filter → label → finetune."""
+"""Pipeline runner: preprocess → diarize → scrub → validation → segment → filter → label → finetune."""
 
 import argparse
 import json
@@ -123,15 +123,11 @@ def _prompt_speaker(seg_dir: Path, call_id: str) -> str:
     with open(dialogue_path) as f:
         dialogue = json.load(f)
 
-    # Collect sample turns per speaker
     speaker_samples: dict[str, list[str]] = {}
     for turn in dialogue["turns"]:
-        spk = turn["speaker"]
-        if spk not in speaker_samples:
-            speaker_samples[spk] = []
-        if len(speaker_samples[spk]) < 3:
-            text = turn["text"][:80]
-            speaker_samples[spk].append(text)
+        samples = speaker_samples.setdefault(turn["speaker"], [])
+        if len(samples) < 3:
+            samples.append(turn["text"][:80])
 
     print("\n" + "=" * 60)
     print("SPEAKER SELECTION")
@@ -141,7 +137,6 @@ def _prompt_speaker(seg_dir: Path, call_id: str) -> str:
     turns_dir = seg_dir / call_id / "turns"
     speakers = sorted(speaker_samples.keys())
     for i, spk in enumerate(speakers, 1):
-        # Find first audio file for this speaker
         audio_files = sorted(turns_dir.glob(f"*_{spk}.wav")) if turns_dir.exists() else []
         print(f"  [{i}] {spk}")
         if audio_files:
@@ -152,11 +147,9 @@ def _prompt_speaker(seg_dir: Path, call_id: str) -> str:
 
     while True:
         choice = input("Which speaker is you? Enter number or label: ").strip()
-        # Accept number
         if choice.isdigit() and 1 <= int(choice) <= len(speakers):
             selected = speakers[int(choice) - 1]
             break
-        # Accept label directly
         if choice in speakers:
             selected = choice
             break
@@ -227,10 +220,6 @@ def main():
     parser.add_argument(
         "--finetune-test", action="store_true",
         help="Finetune in test mode (spot A100, 1 step)"
-    )
-    parser.add_argument(
-        "--finetune-provider", type=str, default="gcp",
-        help="Cloud provider for fine-tuning (default: gcp)"
     )
     parser.add_argument(
         "--validation-backend", choices=["bedrock", "llamacpp"], default="llamacpp",
@@ -345,7 +334,7 @@ def main():
         timings["label"] = run_step("label", ["label"], **step_kw)
 
     if "finetune" in steps_to_run:
-        finetune_args = ["--provider", args.finetune_provider]
+        finetune_args = []
         if args.finetune_test:
             finetune_args.append("--test")
         timings["finetune"] = run_step("finetune", finetune_args, **step_kw)
