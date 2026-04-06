@@ -1,27 +1,68 @@
 """Speaker labeling pipeline.
 
-Uses resemblyzer to extract speaker embeddings and match against a
-reference voiceprint to label speakers as 'me' vs 'other'.
+Uses pyannote WeSpeakerResNet34 (bundled inside
+`pyannote/speaker-diarization-community-1`) to extract speaker embeddings and
+match against a reference voiceprint to label speakers as 'me' vs 'other'.
 """
 
 import json
 import logging
+import os
+import warnings
 from pathlib import Path
 
 import numpy as np
 import soundfile as sf
-from resemblyzer import VoiceEncoder, preprocess_wav
+import torch
 
 log = logging.getLogger(__name__)
 
-_encoder: VoiceEncoder | None = None
+EMBEDDING_MODEL = "pyannote/speaker-diarization-community-1"
+EMBEDDING_SUBFOLDER = "embedding"
+EMBEDDING_SAMPLE_RATE = 16000
+MIN_EMBED_SECONDS = 0.5
+
+_encoder: "_PyannoteEncoder | None" = None
 
 
-def get_encoder() -> VoiceEncoder:
+def _select_device() -> torch.device:
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if torch.backends.mps.is_available():
+        return torch.device("mps")
+    return torch.device("cpu")
+
+
+class _PyannoteEncoder:
+    def __init__(self, device: torch.device):
+        # Silence pyannote's torchcodec/FFmpeg import warnings; we pass tensors directly.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            from pyannote.audio import Model
+
+        self._model = Model.from_pretrained(
+            EMBEDDING_MODEL,
+            subfolder=EMBEDDING_SUBFOLDER,
+            token=os.environ.get("HF_TOKEN"),
+        )
+        self._model.eval()
+        self._model.to(device)
+        self.device = device
+
+    def embed(self, waveform: torch.Tensor) -> np.ndarray:
+        with torch.inference_mode():
+            emb = self._model(waveform.to(self.device))
+        return emb.detach().cpu().numpy()
+
+
+def get_encoder() -> _PyannoteEncoder:
     global _encoder
     if _encoder is None:
-        log.info("Loading speaker encoder model...")
-        _encoder = VoiceEncoder()
+        device = _select_device()
+        log.info(
+            f"Loading speaker encoder ({EMBEDDING_MODEL}#{EMBEDDING_SUBFOLDER}) on {device.type}..."
+        )
+        _encoder = _PyannoteEncoder(device)
     return _encoder
 
 
@@ -32,16 +73,49 @@ def extract_embedding(audio_paths: list[Path]) -> np.ndarray:
 
     for path in audio_paths:
         audio, sr = sf.read(str(path), dtype="float32")
-        wav = preprocess_wav(audio, source_sr=sr)
-        if len(wav) < 1600:
+        if audio.ndim > 1:
+            audio = audio.mean(axis=1)
+        if sr != EMBEDDING_SAMPLE_RATE:
+            raise ValueError(f"{path}: expected {EMBEDDING_SAMPLE_RATE} Hz, got {sr} Hz")
+        if len(audio) < int(MIN_EMBED_SECONDS * sr):
             continue
-        emb = encoder.embed_utterance(wav)
+        waveform = torch.from_numpy(audio).view(1, 1, -1)
+        emb = encoder.embed(waveform).squeeze(0)
         embeddings.append(emb)
 
     if not embeddings:
         raise ValueError("No valid audio segments to extract embedding from")
 
     return np.mean(embeddings, axis=0)
+
+
+def _save_voiceprint(path: Path, embedding: np.ndarray) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez(
+        str(path),
+        embedding=embedding.astype(np.float32),
+        model=EMBEDDING_MODEL,
+        subfolder=EMBEDDING_SUBFOLDER,
+    )
+
+
+def _load_voiceprint(path: Path) -> np.ndarray:
+    """Load a voiceprint and verify it was produced by the current encoder."""
+    if path.suffix != ".npz":
+        raise ValueError(
+            f"{path}: expected a .npz voiceprint produced by the current encoder. "
+            "Re-run `python -m voicetune.stages.label enroll`."
+        )
+    data = np.load(str(path), allow_pickle=False)
+    if "embedding" not in data.files:
+        raise ValueError(f"{path}: missing 'embedding' key; re-run enroll.")
+    stored_model = str(data["model"]) if "model" in data.files else "<unknown>"
+    if stored_model != EMBEDDING_MODEL:
+        raise ValueError(
+            f"{path}: voiceprint was created with {stored_model!r}, "
+            f"expected {EMBEDDING_MODEL!r}. Re-enroll to match the current encoder."
+        )
+    return data["embedding"]
 
 
 def enroll(segmented_dir: Path, call_id: str, my_speaker_label: str, output_path: Path) -> None:
@@ -62,13 +136,15 @@ def enroll(segmented_dir: Path, call_id: str, my_speaker_label: str, output_path
     log.info(f"Enrolling from {len(audio_paths)} turns of '{my_speaker_label}' in {call_id}")
     embedding = extract_embedding(audio_paths)
 
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    np.save(str(output_path), embedding)
-    log.info(f"Voiceprint saved to {output_path}")
+    _save_voiceprint(output_path, embedding)
+    log.info(
+        f"Voiceprint saved to {output_path} "
+        f"(dim={embedding.shape[0]}, model={EMBEDDING_MODEL}#{EMBEDDING_SUBFOLDER})"
+    )
 
 
-MIN_SIMILARITY = 0.60
-MIN_MARGIN = 0.10
+MIN_SIMILARITY = 0.70
+MIN_MARGIN = 0.15
 MIN_USABLE_TURNS = 3
 
 
@@ -80,7 +156,8 @@ def analyze_speakers(segmented_dir: Path, call_id: str, voiceprint_path: Path) -
     with open(dialogue_path) as f:
         dialogue = json.load(f)
 
-    ref_embedding = np.load(str(voiceprint_path))
+    ref_embedding = _load_voiceprint(voiceprint_path)
+    ref_norm = float(np.linalg.norm(ref_embedding)) or 1.0
 
     speakers = dialogue["speakers"]
     speaker_embeddings = {}
@@ -101,12 +178,13 @@ def analyze_speakers(segmented_dir: Path, call_id: str, voiceprint_path: Path) -
 
     similarities = {}
     for speaker, emb in speaker_embeddings.items():
-        if emb is not None:
-            sim = np.dot(ref_embedding, emb) / (np.linalg.norm(ref_embedding) * np.linalg.norm(emb))
-            similarities[speaker] = float(sim)
-            log.info(f"  {speaker}: similarity = {sim:.3f}")
-        else:
+        if emb is None:
             similarities[speaker] = -1.0
+            continue
+        emb_norm = float(np.linalg.norm(emb)) or 1.0
+        sim = float(np.dot(ref_embedding, emb) / (ref_norm * emb_norm))
+        similarities[speaker] = sim
+        log.info(f"  {speaker}: similarity = {sim:.3f}")
 
     if not similarities:
         log.warning(f"  No speakers found in {call_id}, skipping")
@@ -168,6 +246,7 @@ def apply_labels(analysis: dict, me_speaker: str, output_dir: Path) -> None:
     dialogue["speaker_labels"] = label_map
     dialogue["speaker_similarities"] = analysis["similarities"]
     dialogue["label_quality_flags"] = analysis["quality_flags"]
+    dialogue["speaker_embedding_model"] = f"{EMBEDDING_MODEL}#{EMBEDDING_SUBFOLDER}"
 
     call_dir = output_dir / call_id
     call_dir.mkdir(parents=True, exist_ok=True)

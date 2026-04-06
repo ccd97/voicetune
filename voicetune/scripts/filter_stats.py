@@ -67,15 +67,16 @@ def _pct_f(part: float, whole: float) -> str:
 
 
 BOX_WIDTH = 60
-INNER = BOX_WIDTH - 4  # space between "│ " and " │"
+INNER = BOX_WIDTH - 4
 
 
 def _box_edge(left: str, right: str) -> None:
     print(left + "─" * (BOX_WIDTH - 2) + right)
 
 
-def _box_line(text: str) -> None:
-    print(f"│ {text:<{INNER}} │")
+def _box_line(text: str, visible_len: int | None = None) -> None:
+    pad = INNER - (visible_len if visible_len is not None else len(text))
+    print(f"│ {text}{' ' * max(0, pad)} │")
 
 
 def _box_rows(rows: list[tuple[str, str]]) -> None:
@@ -98,11 +99,14 @@ class StageSummary:
     total_turn_chars: int = 0
     extra: list[tuple[str, str]] = field(default_factory=list)
     languages: list[tuple[str, str]] = field(default_factory=list)
+    languages_header: str = "languages"
+    avg_denom: int = 0  # if > 0, used instead of `files` for per-file averages
 
 
-def _add_language_rows(summary: StageSummary, lang_durations: dict) -> None:
+def _add_language_rows(summary: StageSummary, lang_durations: dict, header: str = "languages") -> None:
     if not lang_durations:
         return
+    summary.languages_header = header
     total = sum(lang_durations.values())
     ranked = sorted(lang_durations.items(), key=lambda x: -x[1])
     top = [(lang, dur) for lang, dur in ranked[:4] if dur >= 1.0]
@@ -125,12 +129,10 @@ def _summarize_preprocess(root: Path) -> StageSummary:
         summary.extra.append(("note", "soundfile not installed, skipping audio stats"))
         return summary
 
-    durations = []
     for wav in wavs:
         info = sf.info(str(wav))
-        durations.append(info.frames / info.samplerate)
+        summary.total_duration += info.frames / info.samplerate
         summary.total_audio_bytes += wav.stat().st_size
-    summary.total_duration = sum(durations)
     return summary
 
 
@@ -175,7 +177,6 @@ def _summarize_json_stage(root: Path, pattern: str, stage_name: str, audio_root:
 
 
 def _summarize_filter(root: Path) -> StageSummary:
-    """Filter writes one <call_id>/dialogue.json + cleaned turns/*.wav per call."""
     dialogue_files = sorted(root.glob("*/dialogue.json"))
     summary = StageSummary("filter", files=len(dialogue_files))
     removed_turns = 0
@@ -191,7 +192,8 @@ def _summarize_filter(root: Path) -> StageSummary:
         summary.total_turns += len(turns)
         summary.total_turn_chars += _turn_text_chars(turns)
 
-        if data.get("rejected"):
+        rejected = bool(data.get("rejected"))
+        if rejected:
             summary.rejected += 1
             for r in data.get("reject_reasons", []):
                 reject_reasons_counter[r] += 1
@@ -211,11 +213,13 @@ def _summarize_filter(root: Path) -> StageSummary:
             key = _normalize_lang(lang)
             lang_durations[key] = lang_durations.get(key, 0.0) + file_dur
 
-        orig = int(data.get("original_turn_count", len(turns)))
-        kept = int(data.get("filtered_turn_count", len(turns)))
-        removed_turns += max(0, orig - kept)
-        for reason, count in (data.get("filter_removed") or {}).items():
-            removed_by_reason[reason] += int(count)
+        # whole-call drops are counted via reject:<reason>; skip them here
+        if not rejected:
+            orig = int(data.get("original_turn_count", len(turns)))
+            kept = int(data.get("filtered_turn_count", len(turns)))
+            removed_turns += max(0, orig - kept)
+            for reason, count in (data.get("filter_removed") or {}).items():
+                removed_by_reason[reason] += int(count)
 
         for turn in turns:
             wav_path = path.parent / turn.get("audio_path", "")
@@ -224,6 +228,7 @@ def _summarize_filter(root: Path) -> StageSummary:
 
     summary.total_duration = sum(durations)
     summary.total_audio_bytes = sum(wav_bytes)
+    summary.avg_denom = summary.accepted
     summary.extra.append(("removed turns", f"{removed_turns:,}"))
     if summary.total_turns and removed_turns:
         total = summary.total_turns + removed_turns
@@ -243,14 +248,21 @@ def _summarize_segment(root: Path) -> StageSummary:
     summary = StageSummary("segment", files=len(dialogue_files), accepted=len(dialogue_files))
     durations = []
     wav_bytes = []
+    lang_durations: dict = {}
 
     for path in dialogue_files:
         data = _load_json(path)
         turns = data.get("turns", [])
         summary.total_turns += len(turns)
         summary.total_turn_chars += _turn_text_chars(turns)
+        file_dur = 0.0
         if "total_duration" in data and isinstance(data["total_duration"], (int, float)):
-            durations.append(float(data["total_duration"]))
+            file_dur = float(data["total_duration"])
+            durations.append(file_dur)
+        lang = data.get("language")
+        if lang:
+            key = _normalize_lang(lang)
+            lang_durations[key] = lang_durations.get(key, 0.0) + file_dur
         for turn in turns:
             audio_path = path.parent / turn.get("audio_path", "")
             if audio_path.exists():
@@ -260,6 +272,7 @@ def _summarize_segment(root: Path) -> StageSummary:
     summary.total_audio_bytes = sum(wav_bytes)
     if wav_bytes:
         summary.extra.append(("avg turn wav", _fmt_bytes(mean(wav_bytes))))
+    _add_language_rows(summary, lang_durations)
     return summary
 
 
@@ -273,6 +286,7 @@ def _summarize_label(labeled_root: Path, audio_root: Path) -> StageSummary:
     other_turns = 0
     me_duration = 0.0
     lang_durations: dict = {}
+    quality_flags_counter: Counter = Counter()
     wav_bytes = []
 
     for path in dialogue_files:
@@ -281,13 +295,16 @@ def _summarize_label(labeled_root: Path, audio_root: Path) -> StageSummary:
         turns = data.get("turns", [])
         summary.total_turns += len(turns)
         summary.total_turn_chars += _turn_text_chars(turns)
+
+        file_dur = 0.0
         if "total_duration" in data and isinstance(data["total_duration"], (int, float)):
-            summary.total_duration += float(data["total_duration"])
+            file_dur = float(data["total_duration"])
+            summary.total_duration += file_dur
         lang = data.get("language")
 
         call_me_dur = 0.0
         for turn in turns:
-            dur = turn.get("duration", turn.get("end", 0) - turn.get("start", 0))
+            dur = max(0.0, float(turn.get("duration", turn.get("end", 0) - turn.get("start", 0))))
             if turn.get("speaker_label") == "me":
                 me_turns += 1
                 call_me_dur += dur
@@ -302,6 +319,9 @@ def _summarize_label(labeled_root: Path, audio_root: Path) -> StageSummary:
             key = _normalize_lang(lang)
             lang_durations[key] = lang_durations.get(key, 0.0) + call_me_dur
 
+        for flag in data.get("label_quality_flags", []):
+            quality_flags_counter[flag] += 1
+
         if data.get("speaker_labels"):
             summary.accepted += 1
 
@@ -309,9 +329,11 @@ def _summarize_label(labeled_root: Path, audio_root: Path) -> StageSummary:
     summary.extra.append(("me turns", f"{me_turns:,}"))
     summary.extra.append(("other turns", f"{other_turns:,}"))
     summary.extra.append(("me duration", _fmt_duration(me_duration)))
+    for flag, count in quality_flags_counter.most_common():
+        summary.extra.append((f"flag:{flag}", f"{count:,}"))
     if wav_bytes:
         summary.extra.append(("avg turn wav", _fmt_bytes(mean(wav_bytes))))
-    _add_language_rows(summary, lang_durations)
+    _add_language_rows(summary, lang_durations, header="me by language")
     return summary
 
 
@@ -336,17 +358,41 @@ def _summarize_finetune(data_root: Path) -> StageSummary:
     val_entries = _read_jsonl(val_manifest) if val_manifest.exists() else []
     manifest_entries = train_entries + val_entries
 
-    summary = StageSummary(
-        "finetune",
-        files=len(wavs),
-        accepted=len(wavs),
-        total_turns=len(manifest_entries),
-    )
-    summary.total_audio_bytes = sum(p.stat().st_size for p in wavs)
-    summary.total_turn_chars = sum(len(e.get("text", "")) for e in manifest_entries)
-    summary.total_duration = sum(
-        float(e["duration"]) for e in manifest_entries if isinstance(e.get("duration"), (int, float))
-    )
+    if manifest_entries:
+        summary = StageSummary(
+            "finetune",
+            files=len(manifest_entries),
+            accepted=len(manifest_entries),
+            total_turns=len(manifest_entries),
+        )
+        manifest_paths = [Path(e["audio"]) for e in manifest_entries if e.get("audio")]
+        summary.total_audio_bytes = sum(p.stat().st_size for p in manifest_paths if p.exists())
+        summary.total_turn_chars = sum(len(e.get("text", "")) for e in manifest_entries)
+        summary.total_duration = sum(
+            float(e["duration"]) for e in manifest_entries if isinstance(e.get("duration"), (int, float))
+        )
+        if summary.total_duration == 0.0 and manifest_paths:
+            import soundfile as sf
+            dur = 0.0
+            for p in manifest_paths:
+                if p.exists():
+                    info = sf.info(str(p))
+                    dur += info.frames / info.samplerate
+            summary.total_duration = dur
+    else:
+        summary = StageSummary(
+            "finetune",
+            files=len(wavs),
+            accepted=len(wavs),
+        )
+        summary.total_audio_bytes = sum(p.stat().st_size for p in wavs)
+        if wavs:
+            import soundfile as sf
+            dur = 0.0
+            for wav in wavs:
+                info = sf.info(str(wav))
+                dur += info.frames / info.samplerate
+            summary.total_duration = dur
 
     summary_path = data_root / "export_summary.json"
     if summary_path.exists():
@@ -358,25 +404,16 @@ def _summarize_finetune(data_root: Path) -> StageSummary:
     if train_entries or val_entries:
         summary.extra.append(("train/val", f"{len(train_entries):,} / {len(val_entries):,}"))
 
-    if summary.total_duration == 0.0 and wavs:
-        try:
-            import soundfile as sf
-            dur = 0.0
-            for wav in wavs:
-                info = sf.info(str(wav))
-                dur += info.frames / info.samplerate
-            summary.total_duration = dur
-        except ImportError:
-            pass
+    if manifest_entries and len(wavs) != len(manifest_entries):
+        summary.extra.append(("wavs on disk", f"{len(wavs):,}"))
 
-    if wavs:
-        summary.extra.append(("avg wav", _fmt_bytes(summary.total_audio_bytes / len(wavs))))
     return summary
 
 
 def _print_summary(summary: StageSummary) -> None:
     _box_edge("┌", "┐")
-    _box_line(f"\033[1m{summary.name.upper()}\033[0m")
+    name = summary.name.upper()
+    _box_line(f"\033[1m{name}\033[0m", visible_len=len(name))
 
     if summary.files == 0:
         _box_edge("├", "┤")
@@ -394,17 +431,20 @@ def _print_summary(summary: StageSummary) -> None:
         if summary.rejected:
             rows.append(("rejected", f"{summary.rejected:,}  ({_pct(summary.rejected, summary.files)})"))
 
+    denom = summary.avg_denom or summary.files
+
     if summary.total_turns:
         rows.append(("turns", f"{summary.total_turns:,}"))
-        rows.append(("avg turns/file", _fmt_num(summary.total_turns / summary.files)))
+        if summary.total_turns != denom:
+            rows.append(("avg turns/file", _fmt_num(summary.total_turns / denom)))
 
     if summary.total_duration:
         rows.append(("duration", _fmt_duration(summary.total_duration)))
-        rows.append(("avg duration", _fmt_duration(summary.total_duration / summary.files)))
+        rows.append(("avg duration", _fmt_duration(summary.total_duration / denom)))
 
     if summary.total_audio_bytes:
         rows.append(("audio", _fmt_bytes(summary.total_audio_bytes)))
-        rows.append(("avg audio/file", _fmt_bytes(summary.total_audio_bytes / summary.files)))
+        rows.append(("avg audio/file", _fmt_bytes(summary.total_audio_bytes / denom)))
 
     if summary.total_turn_chars:
         rows.append(("text chars", f"{summary.total_turn_chars:,}"))
@@ -418,7 +458,7 @@ def _print_summary(summary: StageSummary) -> None:
 
     if summary.languages:
         _box_edge("├", "┤")
-        _box_line("languages")
+        _box_line(summary.languages_header)
         _box_rows(summary.languages)
 
     _box_edge("└", "┘")

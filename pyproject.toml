@@ -21,7 +21,7 @@ dependencies = [
     "llama-cpp-python>=0.3",
     "torch>=2.8",
     "resemblyzer>=0.1.4",
-    "setuptools==80.10.2",  # resemblyzer -> webrtcvad needs pkg_resources
+    "setuptools==80.10.2",
 ]
 
 [project.optional-dependencies]

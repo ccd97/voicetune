@@ -112,21 +112,28 @@ VoxCPM loads base + adapter side-by-side at runtime; hot-swap is supported via `
 
 These are constants in `backends/gcp/provider.py`. The bucket is passed to the VM via instance metadata.
 
+Monitor a running job via serial console:
+
+```
+gcloud compute instances get-serial-port-output voicetune-finetune --zone=ZONE --project=ehc-cdcunha-1a374e
+```
+
 ## Test Mode
 
 `python -m voicetune.stages.finetune --test` uses a SPOT A100 with 1 training step to validate the pipeline end-to-end.
 
 ## Training Tips
 
-- `r=64, alpha=128, enable_lm=true, enable_dit=true, enable_proj=true`. r=32 is the VoxCPM2 doc default; A100 40 GB has headroom at bs=1 so we run r=64. `alpha=2*r` (scaling 2.0) — the 800-step run at `alpha=r` produced a DiT ΔW of ~0.012 max, too small to shift voice identity out of the training-language distribution. `enable_dit` must stay on.
-- `learning_rate=5e-4`, 5× VoxCPM's LoRA default. The 200-step run at 1e-4 moved val/loss only 1.7% (effective ΔW 7.5 vs 16.9 at 800 steps); grad norms sit at 0.1–0.2 so the 1.0 clip holds.
-- Target 1–3 epochs for single-speaker cloning. At effective bs 16 with 300–900 clips that's ~20–170 optimizer steps; `--max-steps 200` lands just past 3 epochs on ~1k clips. An earlier 800-step run regressed val/loss/total from 0.924 → 1.105.
-- `find_best_step` picks by `val/loss/total` (VoxCPM splits val loss into `total`/`diff`/`stop`; a bare `val/loss` tag doesn't exist). Falls back to the latest step if the tag is missing.
-- Language mix: when the training set is dominated by one language, the LoRA anchors voice identity to that language and other-language inference reverts to the base prior. Oversampling the minority (7–8× duplication of 65 Hindi clips) made this worse. Use `--keep-languages english,hindi` to drop Marathi/mixed at manifest time.
-- On A100 40 GB: `batch_size=1, grad_accum_steps=16, max_batch_tokens=8192`. VoxCPM docs cite ~20 GB at bs=2 but that OOMs on CUDA 12.9; bs=1 brings it back under.
-- Each checkpoint is a directory (`step_NNNNNNN/`), not a single file.
-- Monitor: `gcloud compute instances get-serial-port-output voicetune-finetune --zone=ZONE --project=ehc-cdcunha-1a374e`.
-- The VM caches the base model in GCS under `voxcpm2-base/` after first download.
+- LoRA config: `r=64, alpha=128, enable_lm=true, enable_dit=true, enable_proj=true`. VoxCPM2's doc default is r=32; A100 40 GB at bs=1 fits r=64. `alpha=2*r` (scaling 2.0): an earlier `alpha=r` 800-step run gave DiT ΔW ≤ 0.012, which wasn't enough to move voice identity out of the training-language distribution. Disabling `enable_dit` tanks audio quality.
+- A100 40 GB: `batch_size=1, grad_accum_steps=16, max_batch_tokens=8192`. VoxCPM docs cite ~20 GB at bs=2 but that OOMs on CUDA 12.9; bs=1 fits.
+- Learning rate 5e-4, 5× VoxCPM's LoRA default. 1e-4 for 200 steps moved val/loss 1.7% (effective ΔW 7.5 vs 16.9 at 800 steps); grad norms sit at 0.1–0.2 so the 1.0 clip never fires.
+- 1–3 epochs for single-speaker cloning. 300–900 clips at effective bs 16 is ~20–170 steps; `--max-steps 200` gives ~3 epochs on ~1k clips. An 800-step run regressed `val/loss/total` from 0.924 → 1.105.
+- Best-step selection reads `val/loss/total` from TensorBoard (VoxCPM splits val loss into `total`/`diff`/`stop`; there's no bare `val/loss` tag). Falls back to the latest step when no val manifest exists.
+- Language mix: when one language dominates, the LoRA anchors voice identity to it and other-language inference reverts to the base prior. `prepare_dataset` classifies by script (Latin → English, Devanagari + Latin → mixed) plus the call-level `language` (`mr-IN` → Marathi, `hi` → Hindi). `--keep-languages english,hindi` drops the rest. Oversampling 65 Hindi clips 7–8× made it worse.
+- Per-call cap `--max-turns-per-call 50` stops one long call from dominating: in the first run a single 177-turn call was 16% of the data.
+- Duration bounds (`--min-duration 3.0 --max-duration 30.0`) live in the filter stage; finetune consumes `output/filtered/` as-is.
+- Trailing silence >0.5 s causes "run-away" inference. The filter stage drops decayed clips via `TAIL_DECAY_CODE`; if run-away still shows up, add `librosa.effects.trim(top_db=40)` in `prepare_dataset`.
+- VoxCPM's pretraining is sentence-cased; ALL-CAPS transcripts degrade text adherence.
 
 ## HuggingFace Auth
 

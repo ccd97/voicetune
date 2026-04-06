@@ -151,7 +151,7 @@ def render_config(vox_dir: Path, model_dir: Path, data_dir: Path, max_steps: int
         "max_steps": max_steps,
         "log_interval": 10,
         "valid_interval": max(1, min(50, max_steps)),
-        "save_interval": max(1, min(50, max_steps)),
+        "save_interval": max(1, min(100, max_steps)),
         "learning_rate": LEARNING_RATE,
         "weight_decay": 0.01,
         "warmup_steps": max(1, max_steps // 10),

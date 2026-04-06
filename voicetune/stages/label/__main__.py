@@ -39,13 +39,13 @@ def main():
     )
     enroll_parser.add_argument(
         "--voiceprint", type=Path, default=None,
-        help="Where to save voiceprint (default: <run-dir>/voiceprint.npy)"
+        help="Where to save voiceprint (default: <run-dir>/voiceprint.npz)"
     )
 
     label_parser = subparsers.add_parser("label", help="Label speakers in segmented calls")
     label_parser.add_argument(
         "--voiceprint", type=Path, default=None,
-        help="Path to voiceprint file (default: <run-dir>/voiceprint.npy)"
+        help="Path to voiceprint file (default: <run-dir>/voiceprint.npz)"
     )
     label_parser.add_argument(
         "--output-dir", type=Path, default=None,
@@ -60,7 +60,7 @@ def main():
     if args.input_dir is None:
         args.input_dir = args.run_dir / "filtered"
     if args.voiceprint is None:
-        args.voiceprint = args.run_dir / "voiceprint.npy"
+        args.voiceprint = args.run_dir / "voiceprint.npz"
 
     if args.command == "enroll":
         enroll(args.input_dir, args.call_id, args.speaker, args.voiceprint)

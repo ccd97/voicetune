@@ -72,11 +72,11 @@ def main():
         sys.exit(1)
 
     if args.base_only:
-        os.environ["LORA_DIR"] = ""
+        lora_dir: Path | None = None
         log.info("Base-only mode: LoRA skipped.")
     elif not args.lora_dir.is_dir():
         log.warning(f"LoRA dir not found at {args.lora_dir}; falling back to base-only.")
-        os.environ["LORA_DIR"] = ""
+        lora_dir = None
     else:
         has_weights = (
             (args.lora_dir / "lora_weights.safetensors").exists()
@@ -85,18 +85,22 @@ def main():
         if not has_weights:
             log.error(f"No lora_weights.safetensors/.ckpt in {args.lora_dir}")
             sys.exit(1)
-        os.environ["LORA_DIR"] = str(args.lora_dir.resolve())
+        lora_dir = args.lora_dir.resolve()
 
-    os.environ["BASE_MODEL"] = args.base_model
-    os.environ["SAMPLES_DIR"] = (
-        str(args.sample_dir.resolve()) if args.sample_dir.is_dir() else ""
-    )
-    os.environ["GRADIO_PORT"] = str(args.port)
-    os.environ["GRADIO_SHARE"] = "1" if args.share else "0"
+    samples_dir = args.sample_dir.resolve() if args.sample_dir.is_dir() else None
+
+    # Must be set before torch loads inside .pipeline.
+    os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 
     log.info(f"Starting Gradio on http://127.0.0.1:{args.port}")
-    from .app import launch
-    launch()
+    from .pipeline import launch
+    launch(
+        base_repo=args.base_model,
+        lora_dir=lora_dir,
+        samples_dir=samples_dir,
+        port=args.port,
+        share=args.share,
+    )
 
 
 if __name__ == "__main__":

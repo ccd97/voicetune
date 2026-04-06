@@ -320,7 +320,7 @@ def main():
             log.error("No filtered calls found for labeling")
             sys.exit(1)
 
-        voiceprint = run_dir / "voiceprint.npy"
+        voiceprint = run_dir / "voiceprint.npz"
         if voiceprint.exists():
             log.info(f"Using existing voiceprint: {voiceprint}")
         else:

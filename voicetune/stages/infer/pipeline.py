@@ -1,31 +1,37 @@
 """Gradio UI for VoxCPM2 + optional LoRA adapter.
 
-Launched by `python -m voicetune.stages.infer`. Reads config from env:
-
-    BASE_MODEL    HF repo id or local path (default: openbmb/VoxCPM2)
-    LORA_DIR      LoRA adapter dir (empty = base-only mode)
-    SAMPLES_DIR   Dir of reference WAVs (populates a dropdown)
-    GRADIO_PORT   Port to listen on (default: 7860)
-    GRADIO_SHARE  1 to enable gradio.live share tunnel
+Launched by `python -m voicetune.stages.infer`.
 """
-
-import os
-
-# Must precede the torch import so MPS-less ops fall back to CPU instead of crashing.
-os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 
 import json
 import logging
+import random
 import tempfile
 from pathlib import Path
 
 import gradio as gr
+import numpy as np
 import soundfile as sf
 import torch
 from voxcpm import VoxCPM
 
 log = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s %(message)s")
+
+_SEED_RANDOM = -1
+
+
+def _seed_all(seed: int) -> None:
+    """Seed Python/numpy/torch before VoxCPM.generate().
+
+    VoxCPM only draws from the global torch RNG (flow-matching latent + VAE
+    NoiseBlock; LM is argmax), so this is enough for same-machine repro --
+    except when retry_badcase=True re-draws on a retry.
+    """
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
 
 def _device_hint() -> str:
@@ -64,24 +70,23 @@ def _load_lora_config(lora_dir: Path):
     return LoRAConfig(**kwargs)
 
 
-def launch() -> None:
-    base_repo = os.environ.get("BASE_MODEL", "openbmb/VoxCPM2")
-    lora_dir = os.environ.get("LORA_DIR", "")
-    samples_dir = os.environ.get("SAMPLES_DIR", "")
-    port = int(os.environ.get("GRADIO_PORT", "7860"))
-    share = os.environ.get("GRADIO_SHARE", "0") in ("1", "true", "True")
-
+def launch(
+    base_repo: str,
+    lora_dir: Path | None,
+    samples_dir: Path | None,
+    port: int = 7860,
+    share: bool = False,
+) -> None:
     log.info(f"Device: {_device_hint()}")
 
     # Single model instance with set_lora_enabled() toggle; avoids doubling 2B-param RAM/VRAM.
-    has_lora = bool(lora_dir) and Path(lora_dir).is_dir()
+    has_lora = lora_dir is not None and lora_dir.is_dir()
     if has_lora:
-        lora_path = Path(lora_dir)
-        log.info(f"Loading base model {base_repo} with LoRA adapter {lora_path}")
+        log.info(f"Loading base model {base_repo} with LoRA adapter {lora_dir}")
         model = VoxCPM.from_pretrained(
             base_repo,
-            lora_weights_path=str(lora_path),
-            lora_config=_load_lora_config(lora_path),
+            lora_weights_path=str(lora_dir),
+            lora_config=_load_lora_config(lora_dir),
             load_denoiser=False,
         )
     else:
@@ -89,13 +94,18 @@ def launch() -> None:
         model = VoxCPM.from_pretrained(base_repo, load_denoiser=False)
 
     samples: list[str] = []
-    if samples_dir and Path(samples_dir).is_dir():
-        samples = sorted(str(p) for p in Path(samples_dir).glob("*.wav"))
+    if samples_dir and samples_dir.is_dir():
+        samples = sorted(str(p) for p in samples_dir.glob("*.wav"))
         log.info(f"Found {len(samples)} reference WAVs in {samples_dir}")
 
-    def generate(text, ref_audio, ref_text, use_lora, cfg_value, timesteps):
+    def generate(text, ref_audio, ref_text, use_lora, cfg_value, timesteps, seed):
         if not text or not text.strip():
             return None, "Enter some text."
+
+        seed_int = int(seed)
+        if seed_int == _SEED_RANDOM:
+            seed_int = random.randint(0, 2**31 - 1)
+        _seed_all(seed_int)
 
         if has_lora:
             model.set_lora_enabled(bool(use_lora))
@@ -124,12 +134,12 @@ def launch() -> None:
         out = Path(tempfile.mkdtemp()) / "out.wav"
         sf.write(str(out), wav, sr)
         tag = "LoRA" if (has_lora and use_lora) else "Base"
-        return str(out), f"Generated {len(wav) / sr:.2f}s from {tag} model."
+        return str(out), f"Generated {len(wav) / sr:.2f}s from {tag} model (seed={seed_int})."
 
     header = f"""# VoxCPM2 inference
 
 **Base:** `{base_repo}`  
-**LoRA:** {'`' + lora_dir + '`' if has_lora else '_(base-only mode)_'}
+**LoRA:** {'`' + str(lora_dir) + '`' if has_lora else '_(base-only mode)_'}
 
 Device: `{_device_hint()}`"""
 
@@ -162,6 +172,11 @@ Device: `{_device_hint()}`"""
                 with gr.Row():
                     cfg_value = gr.Slider(1.0, 5.0, value=2.0, step=0.1, label="CFG")
                     timesteps = gr.Slider(4, 30, value=10, step=1, label="Inference timesteps")
+                seed = gr.Number(
+                    value=_SEED_RANDOM,
+                    precision=0,
+                    label=f"Seed ({_SEED_RANDOM} = random; same seed + same inputs reproduce the take)",
+                )
                 btn = gr.Button("Generate", variant="primary")
             with gr.Column():
                 audio_out = gr.Audio(label="Output", type="filepath")
@@ -169,7 +184,7 @@ Device: `{_device_hint()}`"""
 
         btn.click(
             generate,
-            inputs=[text, ref_audio, ref_text, use_lora, cfg_value, timesteps],
+            inputs=[text, ref_audio, ref_text, use_lora, cfg_value, timesteps, seed],
             outputs=[audio_out, status],
         )
 
@@ -179,7 +194,3 @@ Device: `{_device_hint()}`"""
         share=share,
         show_error=True,
     )
-
-
-if __name__ == "__main__":
-    launch()
