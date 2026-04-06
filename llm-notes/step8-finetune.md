@@ -27,7 +27,7 @@ Run VoxCPM2 LoRA fine-tuning on a GCP A100 VM. Uploads training data to GCS, pol
 
 ### Local Side (pipeline.py)
 
-1. Prepares dataset: reads labeled `dialogue.json` from `output/labeled/`, copies matching "me" turn WAVs from `output/filtered/` to `output/voxcpm/data/me/*.wav`, and emits `train.jsonl` + `val.jsonl` (5% holdout, stratified by `call_id`; skipped when <20 turns). Calls with more than `max_turns_per_call` turns (default 50) are downsampled with a stable seed. When `keep_languages` is set, clips are classified by `_classify_language` and only allowed buckets are kept (e.g. `--keep-languages english,hindi` drops Marathi).
+1. Prepares dataset: reads labeled `dialogue.json` from `output/labeled/`, copies matching "me" turn WAVs from `output/filtered/` to `output/voxcpm/data/me/*.wav`, and emits `train.jsonl` + `val.jsonl` (random 6% turn-level holdout, seed=0; skipped when <20 turns). Calls with more than `max_turns_per_call` turns (default 50) are downsampled with a stable seed. When `keep_languages` is set, clips are classified by `_classify_language` and only allowed buckets are kept (e.g. `--keep-languages english,hindi` drops Marathi).
 2. Validates `{data-dir}/train.jsonl` is present and well-formed.
 3. Creates GCS bucket if needed, grants compute SA access.
 4. Zips the dataset directory and uploads `training-data.zip` to `gs://voicetune-finetune-cdcunha/`.
@@ -68,7 +68,7 @@ Status is reported via guest attribute `voicetune/status` at each phase: `STARTI
 ```
 me/{call_id}_turn_NNN.wav
 train.jsonl   # {"audio": "...", "text": "...", "duration": N.N} per line
-val.jsonl     # same schema, ~5% holdout, call-stratified (skipped when <20 turns)
+val.jsonl     # same schema, ~6% random turn-level holdout (skipped when <20 turns)
 export_summary.json
 ```
 

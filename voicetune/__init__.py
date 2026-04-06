@@ -11,16 +11,3 @@ Pipeline steps:
     8. finetune    — LoRA fine-tune VoxCPM2
     9. infer       — local Gradio UI for base + LoRA inference
 """
-
-from voicetune.common import TARGET_SR, merge_segments_to_turns, write_wav
-from voicetune.run import STEPS, main, parse_steps, run_step
-
-__all__ = [
-    "STEPS",
-    "TARGET_SR",
-    "main",
-    "merge_segments_to_turns",
-    "parse_steps",
-    "run_step",
-    "write_wav",
-]

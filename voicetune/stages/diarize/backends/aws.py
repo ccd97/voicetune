@@ -117,16 +117,6 @@ def _collect_result(job: dict, s3, bucket) -> dict:
     }
 
 
-def diarize(audio_path: Path, num_speakers: int | None = None, language: str | None = None) -> dict:
-    """Run diarization + transcription for a single file via AWS Transcribe."""
-    s3, transcribe, bucket = _make_clients()
-    job = _upload_and_start(audio_path, num_speakers, language, s3, transcribe, bucket)
-    completed, failed = _poll_jobs([job], transcribe)
-    if failed:
-        raise RuntimeError(f"Transcription job failed: {failed[0]['error']}")
-    return _collect_result(completed[0], s3, bucket)
-
-
 def diarize_batch(audio_paths: list[Path], num_speakers: int | None = None,
                   language: str | None = None) -> list[tuple[Path, dict | str]]:
     """Submit all files, poll concurrently, return per-file results.

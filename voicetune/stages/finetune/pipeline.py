@@ -44,58 +44,6 @@ def _strip_private(entry: dict) -> dict:
     return {k: v for k, v in entry.items() if not k.startswith("_")}
 
 
-def _call_stratified_split(
-    entries_by_call: dict[str, list[dict]],
-    val_split: float,
-    seed: int,
-) -> tuple[list[dict], list[dict], list[str]]:
-    """Split so whole calls go to train or val, no call spans both.
-
-    Greedy fill on a shuffled call order: add a call to val iff it fits under
-    1.5× the target turn count, else send it to train. Falls back to the
-    smallest call when every call exceeds that cap.
-    """
-    total = sum(len(v) for v in entries_by_call.values())
-    rng = random.Random(seed)
-    call_ids = sorted(entries_by_call.keys())
-    rng.shuffle(call_ids)
-
-    if total <= 20:
-        train = [e for cid in call_ids for e in entries_by_call[cid]]
-        rng.shuffle(train)
-        return train, [], []
-
-    target = max(1, int(total * val_split))
-    cap = max(target, int(target * 1.5))
-
-    val_entries: list[dict] = []
-    train_entries: list[dict] = []
-    val_calls: list[str] = []
-    for cid in call_ids:
-        turns = entries_by_call[cid]
-        if len(val_entries) < target and len(val_entries) + len(turns) <= cap:
-            val_entries.extend(turns)
-            val_calls.append(cid)
-        else:
-            train_entries.extend(turns)
-
-    if not val_entries:
-        smallest = min(call_ids, key=lambda c: len(entries_by_call[c]))
-        val_entries = list(entries_by_call[smallest])
-        train_entries = [
-            e for cid in call_ids if cid != smallest for e in entries_by_call[cid]
-        ]
-        val_calls = [smallest]
-        log.warning(
-            f"Call-stratified val fell back to smallest call ({smallest}, "
-            f"{len(val_entries)} turns) — all other calls exceed the {cap}-turn cap."
-        )
-
-    rng.shuffle(train_entries)
-    rng.shuffle(val_entries)
-    return train_entries, val_entries, val_calls
-
-
 def prepare_dataset(
     labeled_dir: Path,
     filtered_dir: Path,
@@ -183,15 +131,23 @@ def prepare_dataset(
         log.info(msg)
         all_stats.append(stats)
 
-    total = sum(len(v) for v in entries_by_call.values())
+    all_entries = [e for cid in sorted(entries_by_call) for e in entries_by_call[cid]]
+    total = len(all_entries)
     if total == 0:
         raise RuntimeError(f"No 'me' turns exported from {labeled_dir}")
 
-    train_entries, val_entries, val_calls = _call_stratified_split(
-        entries_by_call, val_split, seed=0
-    )
+    split_rng = random.Random(0)
+    split_rng.shuffle(all_entries)
 
-    lang_counts = Counter(e["_lang"] for e in train_entries)
+    if total <= 20:
+        train_entries, val_entries = all_entries, []
+    else:
+        n_val = max(1, round(total * val_split))
+        val_entries = all_entries[:n_val]
+        train_entries = all_entries[n_val:]
+
+    train_lang_counts = Counter(e["_lang"] for e in train_entries)
+    val_lang_counts = Counter(e["_lang"] for e in val_entries)
 
     _write_jsonl(output_dir / "train.jsonl", [_strip_private(e) for e in train_entries])
     if val_entries:
@@ -201,11 +157,11 @@ def prepare_dataset(
         "total_exported": total,
         "train": len(train_entries),
         "val": len(val_entries),
-        "val_calls": val_calls,
         "output_dir": str(output_dir),
         "max_turns_per_call": max_turns_per_call,
         "keep_languages": sorted(keep_languages) if keep_languages else None,
-        "language_counts": dict(lang_counts),
+        "train_language_counts": dict(train_lang_counts),
+        "val_language_counts": dict(val_lang_counts),
         "calls": all_stats,
     }
     with open(output_dir / "export_summary.json", "w") as f:
@@ -213,10 +169,10 @@ def prepare_dataset(
 
     log.info(
         f"Dataset: {total} utterances, "
-        f"{len(train_entries)} train, {len(val_entries)} val "
-        f"across {len(val_calls)} calls → {output_dir}"
+        f"{len(train_entries)} train, {len(val_entries)} val → {output_dir}"
     )
-    log.info(f"  train language mix: {dict(lang_counts)}")
+    log.info(f"  train language mix: {dict(train_lang_counts)}")
+    log.info(f"  val language mix:   {dict(val_lang_counts)}")
     return summary
 
 

@@ -26,9 +26,7 @@ def save_result(result: dict, output_dir: Path) -> Path:
 
 def process_file(audio_path: Path, output_dir: Path, mode: str,
                  num_speakers: int | None = None, language: str | None = None) -> dict:
-    if mode == "aws":
-        from .backends.aws import diarize
-    elif mode == "whisperx":
+    if mode == "whisperx":
         from .backends.whisperx_backend import diarize
     elif mode == "whispermlx":
         from .backends.whispermlx_backend import diarize
