@@ -10,34 +10,26 @@ Validate and fix speaker diarization errors using an LLM's understanding of conv
 
 ## CLI Args
 
-
 | Flag           | Default               | Description                             |
 | -------------- | --------------------- | --------------------------------------- |
-| `--input-dir`  | `./output/diarized`   | Directory with diarized JSON files      |
-| `--output-dir` | `./output/validated`  | Output directory for validated files    |
-
+| `--run-dir`    | `./output`            | Base output directory                   |
+| `--input-dir`  | `<run-dir>/diarized`  | Directory with diarized JSON. When invoked by `voicetune.run`, the orchestrator overrides this to `<run-dir>/scrubbed` if scrub produced output. |
+| `--output-dir` | `<run-dir>/validated` | Output directory for validated files    |
 
 ## What It Does
 
-1. **Read** each `*_diarized.json` from the diarized (or scrubbed) output
-2. **Build a prompt** showing the LLM the full transcript with turn indices, speaker labels, and timestamps
-3. **Ask the LLM** to review and correct speaker assignments based on:
-  - Conversational flow (who responds to whom)
-  - Names mentioned (people referring to each other)
-  - Consistency of speaking style
-  - Turn-taking patterns
-4. **Parse** the JSON array response mapping each turn index to validated speaker + optional name
-5. **Apply fixes** and write output in the same format as diarized JSON (compatible with segment step)
-6. **Log changes** with reasoning for each reassignment
+Reads each `*_diarized.json`, sends the transcript to the LLM as numbered lines (`[index] speaker (start - end): text`), and asks it to re-assign each turn's speaker based on dialogue flow, names used, and turn-taking. The LLM responds with `{"confidence": 0.85, "issues": [], "assignments": [...]}`; the pipeline parses it, applies the fixes, tags per-turn/file-level issues, and writes a `_validated.json`. Prompt template: `validation.j2`. Rules given to the LLM: keep original labels where correct, use names when possible, reflect the actual speaker count.
 
 ## Input/Output
 
-**Input:** `output/diarized/{call_id}_diarized.json` (or `output/scrubbed/` if the scrub step ran)
+**Input:** `output/diarized/{call_id}_diarized.json` (or `output/scrubbed/` if the scrub step ran).
 
-**Output:** `output/validated/{call_id}_validated.json` — one file per recording, always.
+**Output:** `output/validated/{call_id}_validated.json` — one file per recording, always. Already-present files are skipped so interrupted runs resume.
 
-Accepted:
 ```json
+// Accepted. If rejected, adds: "rejected": true, "reject_reasons": [...].
+// Per-turn issues attach directly to the offending turn and are passed through
+// unchanged — the filter step (step 6) is what actually drops those turns.
 {
   "call_id": "call_recording",
   "mode": "aws",
@@ -45,111 +37,44 @@ Accepted:
   "speaker_names": {"spk_0": "Amit", "spk_1": "Customer"},
   "validation_confidence": 0.85,
   "turns": [
-    {"speaker": "spk_0", "start": 0.0, "end": 3.2, "text": "..."}
+    {"speaker": "spk_0", "start": 0.0, "end": 3.2, "text": "Hi"},
+    {"speaker": "spk_1", "start": 3.5, "end": 6.0, "text": "...", "issues": ["too_short"]}
   ]
 }
 ```
 
-Rejected (file-level issue — per-turn issues preserved but don't cause rejection):
-```json
-{
-  "call_id": "call_recording",
-  "mode": "aws",
-  "language": "hi-IN",
-  "rejected": true,
-  "reject_reasons": ["incorrect_speaker_count"],
-  "validation_confidence": 0.40,
-  "turns": [
-    {"speaker": "spk_0", "start": 0.0, "end": 3.2, "text": "...", "issues": ["garbled_transcript"]},
-    {"speaker": "spk_1", "start": 3.5, "end": 6.0, "text": "..."}
-  ]
-}
-```
+## Issue Codes
 
-Non-rejected with per-turn issues (filter step will remove flagged turns):
-```json
-{
-  "call_id": "call_recording_2",
-  "mode": "aws",
-  "language": "en-US",
-  "validation_confidence": 0.85,
-  "turns": [
-    {"speaker": "spk_0", "start": 0.0, "end": 0.3, "text": "Hi", "issues": ["too_short"]},
-    {"speaker": "spk_1", "start": 0.5, "end": 3.2, "text": "Hello, how can I help?"}
-  ]
-}
-```
+Per-turn (attached to the turn; consumed by filter):
 
-## Pipeline Integration
+| Code | Meaning |
+|------|---------|
+| `improper_diarization` | Speaker boundary wrong (split mid-sentence, overlap misattributed) |
+| `incorrect_speaker_assignment` | Turn attributed to the wrong speaker |
+| `garbled_transcript` | Text unintelligible / ASR garbage |
+| `too_short` | Duration < 0.5 s (timing check, not from LLM) |
+| `too_long` | Duration > 60 s (timing check, not from LLM) |
 
-- Output goes to `output/validated/` as `*_validated.json`
-- Step 5 (filter) reads from `output/validated/`, removing flagged turns and rejecting files with file-level issues
+File-level (trigger rejection):
 
-## Prompt Strategy
+| Code | Meaning |
+|------|---------|
+| `incorrect_speaker_count` | Speaker count doesn't match reality (split or merged) |
+| `nonsensical_conversation` | No coherent flow even after correction |
+| `language_mismatch` | Transcript language doesn't match spoken language |
+| `language_not_allowed` | Pre-LLM: language not in `ALLOWED_LANGS` env var |
+| `mono_speaker` | Pre-LLM: `num_speakers < 2` |
+| `low_confidence` | Min batch confidence < 0.60 |
 
-- Presents transcript as numbered lines: `[index] speaker (start - end): text`
-- Asks for JSON array with `{index, speaker, name, reasoning}` per turn
-- Rules: keep original labels where correct, identify speakers by name when possible, reflect actual number of participants
-- Template: `validation.j2`
-- `max_tokens=8192`
+To re-run a subset (e.g. only rejected files, or those with a specific reason) use `voicetune/scripts/rerun.py` — loads validated JSON into an in-memory SQLite DB and filters via `--where` / `--sql` / `--ids`. See `scripts.md`.
 
-### llama.cpp backend
+## Backend
 
-- Uses llama-cpp-python with `create_chat_completion` (text-only)
-- Model cached across files via the shared `load_llamacpp()` helper
-- `n_ctx=8192` to match the response token budget
-- `temperature=0` for deterministic output
-
-## Environment Variables
-
-
-| Var                   | Description             |
-| --------------------- | ----------------------- |
-| `LLAMACPP_MODEL_PATH` | Path to GGUF model file |
-
-## Dependencies
-
-`python-dotenv`, `llama-cpp-python`
-
-## Quality Gate
-
-The LLM returns a confidence score (0.0–1.0) and an `issues` array alongside each batch. The response format is: `{"confidence": 0.85, "issues": [], "assignments": [...]}`.
-
-### Per-turn issues (on each assignment)
-
-| Value | Meaning |
-|-------|---------|
-| `improper_diarization` | This turn's speaker boundary is wrong (split mid-sentence, overlap misattributed) |
-| `incorrect_speaker_assignment` | This turn is attributed to the wrong speaker |
-| `garbled_transcript` | This turn's text is unintelligible or full of ASR errors |
-| `too_short` | Turn duration < 0.5s (timing check, not from LLM) |
-| `too_long` | Turn duration > 60s (timing check, not from LLM) |
-
-These appear in each turn's `"issues"` array in the output. Per-turn issues do **not** cause file rejection — the filter step (step 5) handles turn removal based on these codes.
-
-### File-level issues (top-level "issues")
-
-| Value | Meaning |
-|-------|---------|
-| `incorrect_speaker_count` | Speaker count doesn't match reality (one person split, or two merged) |
-| `nonsensical_conversation` | No coherent conversation flow even after correction |
-| `language_mismatch` | Transcript language doesn't match actual spoken language |
-
-### Pre-LLM checks
-
-- Language not in `ALLOWED_LANGS` env var
-- Mono speaker (`num_speakers < 2`)
-
-### Confidence check
-
-- Confidence < 0.60 (min across batches)
-
-A conversation is rejected only for file-level issues, pre-LLM check failures, or low confidence. Per-turn issues are preserved on individual turns but do **not** trigger file rejection — the filter step removes those turns instead. Every call produces a `_validated.json` — rejected ones have `"rejected": true`, `"reject_reasons"`, and validated turns with per-turn `"issues"`. Files that already exist in the output directory are skipped, so interrupted runs can be resumed. The re-run script (`scripts/rerun_rejected.py`) globs `output/validated/` and filters by `"rejected": true`; use `--reasons` to filter by specific values.
+llama-cpp-python `create_chat_completion` (text-only), `n_ctx=8192`, `temperature=0`, model cached across files via `load_llamacpp()`. Requires `LLAMACPP_MODEL_PATH`.
 
 ## Key Implementation Details
 
-- Response parsing finds JSON object/array boundaries in the LLM response
-- Warns if number of assignments doesn't match number of turns (uses original labels for missing)
-- Per-turn changes logged at DEBUG level; summary at INFO
-- Output format is compatible with the diarized format (has turns[] with speaker, start, end, text fields)
-- **Batching:** Transcripts are processed in batches of 80 turns (BATCH_SIZE) to stay within the `max_tokens=8192` response limit. Each batch after the first includes the last 10 validated turns (CONTEXT_OVERLAP) as read-only context so the LLM maintains speaker consistency across batch boundaries. Short calls (<= 80 turns) go through in a single request.
+- Response parser locates JSON object/array boundaries in free-form LLM output.
+- Warns and falls back to original labels if assignment count doesn't match turn count.
+- Per-turn changes logged at DEBUG, summary at INFO.
+- Batching: 80 turns per request (`BATCH_SIZE`) to fit under `max_tokens=8192`. Each batch after the first prefixes the last 10 validated turns (`CONTEXT_OVERLAP`) as read-only context so speaker labels stay consistent across batch boundaries. Calls ≤80 turns go in one shot.

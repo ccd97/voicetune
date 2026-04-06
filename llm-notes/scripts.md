@@ -6,6 +6,7 @@ Standalone helpers that sit alongside the numbered pipeline stages. None of them
 |--------|---------|
 | `voicetune/scripts/filter_stats.py` | Compact per-stage dashboard across `output/` |
 | `voicetune/scripts/rerun.py` | SQL-driven selective re-run / turn repair |
+| `voicetune/scripts/manual_review.py` | Local browser UI for listening to each "me" clip and tagging rejects |
 
 ## filter_stats.py — Pipeline dashboard
 
@@ -28,7 +29,25 @@ Builds an in-memory SQLite database by scanning `output/validated/*_validated.js
 
 Two modes:
 
-1. **Delete outputs for selective re-run** (default) — for the matched calls, deletes intermediate artifacts for the steps specified in `--steps` (2=diarize, 3=scrub, 4=validation; range `2-4` or list `2,4`). Next time you run the pipeline those stages regenerate only those calls.
-2. **Fix turns in place** (`--fix-turns`) — for turns with `issues` in matched calls, clips the turn's audio out of `output/preprocessed/{call}/full_normalized.wav`, sends it to Claude (Vertex AI) with ±3 turns of context, and rewrites `output/validated/{call}_validated.json` with the corrected transcript. Skips a turn if its neighbors are also flagged (context would be garbage). Model defaults to `claude-haiku-4-5`; override with `FIX_TURNS_MODEL`. Requires `GCP_PROJECT_ID` in `.env` (and optionally `VERTEX_LOCATION`, default `us-east5`). Runs up to 10 calls concurrently.
+1. Delete outputs for selective re-run (default) — deletes matched calls' intermediate artifacts for the steps given in `--steps` (2=diarize, 3=scrub, 4=validation; range `2-4` or list `2,4`). The next pipeline run regenerates only those calls.
+2. Fix turns in place (`--fix-turns`) — for each flagged turn in matched calls, clips the audio from `output/preprocessed/{call}/full_normalized.wav`, sends it to Claude (Vertex AI) with ±3 turns of context, and rewrites the transcript in `output/validated/{call}_validated.json`. Skips turns whose neighbors are also flagged (context would be garbage). Model defaults to `claude-haiku-4-5`; override with `FIX_TURNS_MODEL`. Requires `GCP_PROJECT_ID` in `.env` (optional `VERTEX_LOCATION`, default `us-east5`). Up to 10 calls in parallel.
 
-Always a dry run unless `--execute` is passed. Use `--list` to print matched call IDs (with per-call turn-issue counts) before committing.
+Always a dry run unless `--execute` is passed. `--list` prints matched call IDs (with per-call turn-issue counts) before committing.
+
+## manual_review.py — Per-clip "me" manual review UI
+
+**Run:** `python -m voicetune.scripts.manual_review [--port 7861] [--no-browser]`
+
+Serves a local web UI (default `http://127.0.0.1:7861/`) that walks every WAV under `output/voxcpm/data/me/`, auto-playing each and showing the matching transcript from `output/labeled/<call>/dialogue.json`. Rejects land in `output/manual_review.json`; progress + approvals in `.manual_review_progress.json` (resume-safe).
+
+| Action | Keys | Effect |
+|--------|------|--------|
+| Approve | `1`, `A` | Mark reviewed; nothing written to rejects |
+| Incorrect speaker | `2`, `S` | Reject with reason `incorrect_speaker` |
+| Overlap voice | `3`, `O` | Reject with reason `overlap_voice` |
+| Replay | `Space` | Restart the clip |
+| Undo | `U` | Undo the last decision |
+
+CLI flags (all optional): `--run-dir`, `--audio-dir`, `--labeled-dir`, `--output`, `--progress`, `--port` (default `7861`), `--no-browser`. All path defaults resolve off `--run-dir`.
+
+No stage currently consumes `manual_review.json` — it's raw input for an ad-hoc re-run or a future filter-step extension.

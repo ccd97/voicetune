@@ -12,21 +12,17 @@ Consume validated transcripts, merge consecutive same-speaker turns, cut per-tur
 
 | Flag             | Default                 | Description                                      |
 | ---------------- | ----------------------- | ------------------------------------------------ |
-| `--input-dir`    | `./output/validated`    | Directory with validated JSON files              |
-| `--audio-dir`    | `./output/preprocessed` | Directory with preprocessed WAV files            |
-| `--output-dir`   | `./output/segmented`    | Where to write segmented output                  |
+| `--run-dir`      | `./output`              | Base output directory                            |
+| `--input-dir`    | `<run-dir>/validated`    | Directory with validated JSON files              |
+| `--audio-dir`    | `<run-dir>/preprocessed` | Directory with preprocessed WAV files            |
+| `--output-dir`   | `<run-dir>/segmented`    | Where to write segmented output                  |
 | `--merge-gap`    | `0.5`                   | Max gap (seconds) to merge same-speaker segments |
 
 ## What It Does
 
-1. **Read** each `*_validated.json` from the validation output.
-2. **Merge** consecutive turns from the same speaker when gap <= `--merge-gap` (default 0.5 s). Issue codes on merged turns are combined and carried forward.
-3. **Load** the preprocessed `full_normalized.wav` for the call.
-4. **Cut** per-turn audio segments by sample index.
-5. **Write** per-turn WAV files and a `dialogue.json` manifest.
-6. **Propagate** `rejected`, `reject_reasons`, `validation_confidence`, and per-turn `issues` from the validated JSON untouched so the filter step can apply them.
+For each `*_validated.json`: merge consecutive same-speaker turns when their gap is ≤ `--merge-gap` (default 0.5 s; merged turns OR their `issues` together), load the preprocessed `full_normalized.wav`, cut per-turn segments by sample index, and write `dialogue.json` plus per-turn WAVs. `rejected`, `reject_reasons`, `validation_confidence`, and per-turn `issues` are copied through untouched for the filter step.
 
-Segment processes every file, including ones validation flagged as `rejected`. This keeps the architectural invariant "all filtering happens in the filter stage"; the few wasted cuts on already-rejected files are cheaper than scattering policy logic across stages.
+Segment runs on every file, including ones flagged `rejected` — keeps the invariant "all filtering happens in the filter stage". A few wasted cuts are cheaper than scattering policy across stages.
 
 ## Input/Output
 
@@ -75,11 +71,10 @@ output/segmented/{call_id}/
 ## Key Implementation Details
 
 - `find_audio_for_call()` tries `{audio_dir}/{call_id}/full_normalized.wav` first, then `{call_id}.wav`.
-- Already-segmented calls in the output directory are skipped (resume-safe).
 - Turn audio is extracted by sample index: `int(start * sr)` to `int(end * sr)`.
-- All per-turn WAVs are 16-bit PCM at 16kHz mono (same as preprocessed).
-- The dialogue.json is the central artifact that the filter step consumes next.
-- Segment has **no imports from validation** — it doesn't need to know what validation's codes mean, only that they should be copied through.
+- Already-segmented calls are skipped (presence of `{call_id}/dialogue.json` in the output).
+- Per-turn WAVs are 16-bit PCM at 16 kHz mono (same as preprocessed).
+- Segment has no imports from validation — it passes codes through without knowing what they mean.
 
 ## Dependencies
 

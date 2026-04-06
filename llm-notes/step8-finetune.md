@@ -27,7 +27,7 @@ Run VoxCPM2 LoRA fine-tuning on a GCP A100 VM. Uploads training data to GCS, pol
 
 ### Local Side (pipeline.py)
 
-1. Prepares dataset: reads labeled `dialogue.json` from `output/labeled/`, copies matching "me" turn WAVs from `output/filtered/` to `output/voxcpm/data/me/*.wav`, and emits `train.jsonl` + `val.jsonl` (random 6% turn-level holdout, seed=0; skipped when <20 turns). Calls with more than `max_turns_per_call` turns (default 50) are downsampled with a stable seed. When `keep_languages` is set, clips are classified by `_classify_language` and only allowed buckets are kept (e.g. `--keep-languages english,hindi` drops Marathi).
+1. Prepares dataset: reads labeled `dialogue.json` from `output/labeled/`, copies matching "me" turn WAVs from `output/filtered/` to `output/voxcpm/data/me/*.wav`, and emits `train.jsonl` + `val.jsonl` (random 6% turn-level holdout, seed=0; val split is skipped when `total <= 20` turns). Calls with more than `max_turns_per_call` turns (CLI default 50) are downsampled with a stable seed. When `keep_languages` is set, clips are classified by `_classify_language` and only allowed buckets are kept (e.g. `--keep-languages english,hindi` drops Marathi).
 2. Validates `{data-dir}/train.jsonl` is present and well-formed.
 3. Creates GCS bucket if needed, grants compute SA access.
 4. Zips the dataset directory and uploads `training-data.zip` to `gs://voicetune-finetune-cdcunha/`.
@@ -38,7 +38,7 @@ Run VoxCPM2 LoRA fine-tuning on a GCP A100 VM. Uploads training data to GCS, pol
 
 ### VM Side
 
-Two files run on the VM:
+Two files run on the VM (both live locally under `voicetune/stages/finetune/backends/gcp/` and are uploaded to GCS on each run):
 
 **`startup.sh`** — bash bootstrap (GCE startup script):
 1. Install system deps (`python3.12-venv`, `git`)
@@ -46,7 +46,7 @@ Two files run on the VM:
 3. Clone `https://github.com/OpenBMB/VoxCPM` into `/opt/voxcpm`, create venv, `pip install -e .` plus training extras (`tensorboardX`, `pyyaml`, `google-cloud-storage`, `huggingface_hub`, cu129 torch/torchaudio)
 4. Pull `train_gcp.py` from GCS and hand off to Python
 
-**`train_gcp.py`** — training orchestrator (pulled from GCS):
+**`train_gcp.py`** — training orchestrator, pulled from GCS (local source: `backends/gcp/train.py`; uploaded by `provider.py` as `train_gcp.py`):
 1. Download `openbmb/VoxCPM2` (GCS cache first, HuggingFace fallback via `huggingface_hub.snapshot_download`; token is optional since the repo is public)
 2. Pull training data from GCS and rewrite manifest paths to VM-local absolute paths
 3. Render `conf/me_lora.yaml` (bf16 autocast; r=64 alpha=128 → scaling 2.0; enable_lm+enable_dit+enable_proj; bs=1 × grad_accum=16 → effective bs 16; lr 5e-4, cosine + warmup; save/valid every 50 steps)
@@ -68,7 +68,7 @@ Status is reported via guest attribute `voicetune/status` at each phase: `STARTI
 ```
 me/{call_id}_turn_NNN.wav
 train.jsonl   # {"audio": "...", "text": "...", "duration": N.N} per line
-val.jsonl     # same schema, ~6% random turn-level holdout (skipped when <20 turns)
+val.jsonl     # same schema, ~6% random turn-level holdout (skipped when total <= 20 turns)
 export_summary.json
 ```
 
@@ -131,7 +131,7 @@ gcloud compute instances get-serial-port-output voicetune-finetune --zone=ZONE -
 - Best-step selection reads `val/loss/total` from TensorBoard (VoxCPM splits val loss into `total`/`diff`/`stop`; there's no bare `val/loss` tag). Falls back to the latest step when no val manifest exists.
 - Language mix: when one language dominates, the LoRA anchors voice identity to it and other-language inference reverts to the base prior. `prepare_dataset` classifies by script (Latin → English, Devanagari + Latin → mixed) plus the call-level `language` (`mr-IN` → Marathi, `hi` → Hindi). `--keep-languages english,hindi` drops the rest. Oversampling 65 Hindi clips 7–8× made it worse.
 - Per-call cap `--max-turns-per-call 50` stops one long call from dominating: in the first run a single 177-turn call was 16% of the data.
-- Duration bounds (`--min-duration 3.0 --max-duration 30.0`) live in the filter stage; finetune consumes `output/filtered/` as-is.
+- Duration bounds (`--min-duration 3.0 --max-duration 45.0`) live in the filter stage; finetune consumes `output/filtered/` as-is.
 - Trailing silence >0.5 s causes "run-away" inference. The filter stage drops decayed clips via `TAIL_DECAY_CODE`; if run-away still shows up, add `librosa.effects.trim(top_db=40)` in `prepare_dataset`.
 - VoxCPM's pretraining is sentence-cased; ALL-CAPS transcripts degrade text adherence.
 

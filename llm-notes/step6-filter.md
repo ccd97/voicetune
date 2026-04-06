@@ -14,20 +14,21 @@ Bias toward dropping clips rather than keeping marginal ones — training on fad
 
 | Flag             | Default                | Description                                                                                 |
 | ---------------- | ---------------------- | ------------------------------------------------------------------------------------------- |
-| `--input-dir`    | `./output/segmented`   | Directory containing segmented call directories (`{call_id}/dialogue.json` + `turns/*.wav`) |
-| `--output-dir`   | `./output/filtered`    | Output directory for filtered call directories (same layout as input, cleaned)              |
+| `--run-dir`      | `./output`             | Base output directory                                                                       |
+| `--input-dir`    | `<run-dir>/segmented`  | Directory containing segmented call directories (`{call_id}/dialogue.json` + `turns/*.wav`) |
+| `--output-dir`   | `<run-dir>/filtered`   | Output directory for filtered call directories (same layout as input, cleaned)              |
 | `--min-duration` | `3.0`                  | Drop turns shorter than this (seconds)                                                      |
-| `--max-duration` | `30.0`                 | Drop turns longer than this (seconds)                                                       |
+| `--max-duration` | `45.0`                 | Drop turns longer than this (seconds)                                                       |
 
 ## What It Does
 
 Applied per call, in this order:
 
-1. **File-level rejection** — if the segmented `dialogue.json` has `rejected: true` and the `reject_reasons` include any of the file-level codes (`incorrect_speaker_count`, `nonsensical_conversation`, `language_mismatch`, `language_not_allowed`, `mono_speaker`, `low_confidence`), write a `dialogue.json` with `rejected: true` and no turns, and stop.
-2. **Validation per-turn codes** — drop any turn whose `issues` array contains a validation turn code (`improper_diarization`, `incorrect_speaker_assignment`, `garbled_transcript`, `too_short`, `too_long`).
-3. **Duration bounds** — drop turns with `duration < --min-duration` or `duration > --max-duration`. Tighten these here; downstream finetune consumes `output/filtered/` as-is.
-4. **Audio quality** — drop `mostly_silence` (RMS < −40 dB), `low_energy` (RMS in [−40 dB, −30 dB)), and `tail_decay` (last-third > 5 dB quieter than first-third).
-5. **Write** — surviving WAVs are copied as-is (no amplitude changes; preprocess already normalized loudness) with a new `dialogue.json`. Calls where every turn was dropped are written as `rejected: true` with `all_turns_filtered`.
+1. File-level rejection — if the segmented `dialogue.json` has `rejected: true` and any `reject_reasons` match a file-level code (`incorrect_speaker_count`, `nonsensical_conversation`, `language_mismatch`, `language_not_allowed`, `mono_speaker`, `low_confidence`), write an empty `rejected: true` dialogue and stop.
+2. Validation per-turn codes — drop turns whose `issues` contain `improper_diarization`, `incorrect_speaker_assignment`, `garbled_transcript`, `too_short`, or `too_long`.
+3. Duration bounds — drop turns outside `[--min-duration, --max-duration]`. Tighten these here; finetune consumes `output/filtered/` as-is.
+4. Audio quality — drop `mostly_silence` (RMS < −40 dB), `low_energy` (RMS in [−40, −30) dB), `tail_decay` (last-third > 5 dB quieter than first-third).
+5. Write surviving WAVs unchanged (preprocess already normalized loudness). Calls with every turn dropped are written as `rejected: true` with `all_turns_filtered`; calls with <2 surviving turns become `single_turn`.
 
 ## Audio-quality constants
 
@@ -86,11 +87,10 @@ Rejected dialogue.json (file-level or all-turns-filtered):
 
 ## Key Implementation Details
 
-- `FILE_REJECT_CODES` and `VALIDATION_TURN_CODES` are sourced from `voicetune.stages.validation.pipeline`.
-- Already-filtered calls are skipped (resume-safe: presence of `{call_id}/dialogue.json` in the output).
+- `FILE_REJECT_CODES` and `VALIDATION_TURN_CODES` are imported from `voicetune.stages.validation.pipeline` (single source of truth).
+- Already-filtered calls are skipped (presence of `{call_id}/dialogue.json` in the output).
 - Kept turns have their `issues` key stripped on output.
-- Calls with fewer than 2 surviving turns are rejected with `single_turn`.
-- Duration defaults: `MIN_TURN_DURATION = 3.0 s`, `MAX_TURN_DURATION = 30.0 s`. Finetune reads `output/filtered/` as-is.
+- Duration defaults live in `voicetune/stages/filter/pipeline.py` as `MIN_TURN_DURATION` / `MAX_TURN_DURATION`.
 
 ## Dependencies
 

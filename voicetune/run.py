@@ -28,6 +28,7 @@ STEPS = [
     "filter",         # 6
     "label",          # 7
     "finetune",       # 8
+    "infer",          # 9
 ]
 
 OPTIONAL_STEPS = {"scrub", "validation"}
@@ -292,10 +293,14 @@ def main():
 
     if "label" in steps_to_run:
         filtered_dir = run_dir / "filtered"
-        call_ids = sorted(p.parent.name for p in filtered_dir.glob("*/dialogue.json"))
+        call_ids = sorted(
+            p.parent.name
+            for p in filtered_dir.glob("*/dialogue.json")
+            if not read_json(p).get("rejected")
+        )
 
         if not call_ids:
-            log.error("No filtered calls found for labeling")
+            log.error("No accepted calls found for labeling")
             sys.exit(1)
 
         voiceprint = run_dir / "voiceprint.npz"
@@ -316,6 +321,9 @@ def main():
         if args.finetune_test:
             finetune_args.append("--test")
         timings["finetune"] = run_step("finetune", finetune_args, **step_kw)
+
+    if "infer" in steps_to_run:
+        timings["infer"] = run_step("infer", [], **step_kw)
 
     log.info(f"{'=' * 60}")
     log.info("PIPELINE COMPLETE")

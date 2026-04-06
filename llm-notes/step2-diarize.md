@@ -4,14 +4,15 @@
 Identify who spoke when and transcribe each segment. Combines steps 2 and 3 from the initial plan (diarization + transcription) into a single module.
 
 ## Module
-`voicetune/diarize/` — run via `python -m voicetune.diarize --mode {aws|whisperx|mlx|llamacpp}`
+`voicetune/stages/diarize/` — run via `python -m voicetune.stages.diarize --mode {aws|whisperx|mlx|llamacpp}`
 
 ## CLI Args
 | Flag | Default | Description |
 |------|---------|-------------|
+| `--run-dir` | `./output` | Base output directory |
 | `--mode` | (required) | Backend: `aws`, `whisperx`, `mlx`, or `llamacpp` |
-| `--input-dir` | `./output/preprocessed` | Preprocessed WAV directory |
-| `--output-dir` | `./output/diarized` | Where to write diarized JSON |
+| `--input-dir` | `<run-dir>/preprocessed` | Preprocessed WAV directory |
+| `--output-dir` | `<run-dir>/diarized` | Where to write diarized JSON |
 | `--num-speakers` | auto-detect | Expected speaker count |
 | `--language` | auto-detect | Force language code (e.g. `en-US`, `hi-IN`) |
 
@@ -61,12 +62,15 @@ Identify who spoke when and transcribe each segment. Combines steps 2 and 3 from
   "call_id": "call_recording",
   "mode": "aws|whisperx|mlx|llamacpp",
   "language": "en-US",
+  "num_speakers": 2,
   "turns": [
     {"speaker": "spk_0", "start": 0.0, "end": 3.2, "text": "Hi, how can I help?"},
     {"speaker": "spk_1", "start": 3.5, "end": 8.1, "text": "I'm calling about my bill..."}
   ]
 }
 ```
+
+`num_speakers` is derived in `pipeline.py` after each diarize() call by counting unique speaker labels in `turns`.
 
 ## Shared Utilities (`utils.py`)
 - `get_call_id()` — derives call ID from path (parent dir name if file is `full_normalized.wav`)
@@ -75,7 +79,6 @@ Identify who spoke when and transcribe each segment. Combines steps 2 and 3 from
 - `join_words()` — attaches punctuation to preceding word
 
 ## Key Implementation Details
-- All backends produce the same output format (call_id, mode, language, turns[])
-- Backends are lazy-imported to avoid loading heavy deps unnecessarily
-- Turn merging (consecutive same-speaker) happens later in the segment step, not here
-- The `full_normalized.wav` mono mixdown is always used, even if stereo channels exist
+- Backends are lazy-imported so heavy deps only load for the selected `--mode`.
+- Turn merging (consecutive same-speaker) happens later in the segment step, not here.
+- The `full_normalized.wav` mono mixdown is always used, even if stereo channels exist.

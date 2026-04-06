@@ -8,22 +8,25 @@ Label speakers as "me" vs "other" using a voiceprint embedding. Two-phase proces
 
 ## CLI Args
 
+Common flags (before the subcommand):
+
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--input-dir` | `./output/filtered` | Filtered call directories (dialogue.json + turns/*.wav) |
+| `--run-dir` | `./output` | Base output directory |
+| `--input-dir` | `<run-dir>/filtered` | Filtered call directories (dialogue.json + turns/*.wav) |
 
 ### Enroll subcommand
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--call-id` | (required) | Reference call to use for enrollment |
 | `--speaker` | (required) | Your speaker label in that call (e.g. `spk_0`) |
-| `--voiceprint` | `./output/voiceprint.npz` | Where to save voiceprint |
+| `--voiceprint` | `<run-dir>/voiceprint.npz` | Where to save voiceprint |
 
 ### Label subcommand
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--voiceprint` | `./output/voiceprint.npz` | Path to voiceprint file |
-| `--output-dir` | `./output/labeled` | Output directory for labeled dialogue.json files |
+| `--voiceprint` | `<run-dir>/voiceprint.npz` | Path to voiceprint file |
+| `--output-dir` | `<run-dir>/labeled` | Output directory for labeled dialogue.json files |
 | `--call-id` | all calls | Label a specific call only |
 
 ## What It Does
@@ -89,10 +92,6 @@ Thresholds are module-level constants (`MIN_SIMILARITY`, `MIN_MARGIN`, `MIN_USAB
 - `_load_voiceprint()` refuses `.npy` files and mismatched model names, so re-enrollment is forced when the encoder changes
 - `apply_labels()` stamps `speaker_embedding_model` into each labeled `dialogue.json`
 - The `run.py` orchestrator prompts the user interactively to select their speaker during first enrollment (shows sample text and audio paths)
-
-## Migration Notes
-- The current stage uses pyannote WeSpeaker embeddings and writes `output/voiceprint.npz` with a `speaker_embedding_model` stamp so future encoder swaps are detectable.
-- If you ever change the embedding model, re-enroll (`python -m voicetune.stages.label enroll --call-id <ref> --speaker <spk>`) and delete any stale `output/labeled/` tree so every call gets re-labeled — `_load_voiceprint()` refuses mismatched model names but won't proactively invalidate downstream outputs.
 
 ## Dependencies
 `pyannote.audio>=4.0` (local extra), `soundfile`, `numpy`, `torch`. Requires `HF_TOKEN` with pyannote model access.
