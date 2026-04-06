@@ -6,7 +6,6 @@ Standalone helpers that sit alongside the numbered pipeline stages. None of them
 |--------|---------|
 | `voicetune/scripts/filter_stats.py` | Compact per-stage dashboard across `output/` |
 | `voicetune/scripts/invalidate.py` | SQL-driven selective re-run |
-| `voicetune/scripts/manual_review.py` | Local browser UI for listening to each "me" clip and tagging rejects |
 
 ## filter_stats.py — Pipeline dashboard
 
@@ -32,21 +31,3 @@ Deletes matched calls' intermediate artifacts for the steps given in `--steps` (
 Always a dry run unless `--execute` is passed. `--list` prints matched call IDs (with per-call turn-issue counts) before committing.
 
 After invalidating, just re-run the pipeline as usual (`python -m voicetune.run ...`) — each stage skips calls whose output files still exist, so it will only regenerate the artifacts that were deleted and leave everything else untouched.
-
-## manual_review.py — Per-clip "me" manual review UI
-
-**Run:** `python -m voicetune.scripts.manual_review [--port 7861] [--no-browser]`
-
-Serves a local web UI (default `http://127.0.0.1:7861/`) that walks every WAV under `output/voxcpm/data/me/`, auto-playing each and showing the matching transcript from `output/labeled/<call>/dialogue.json`. Rejects land in `output/manual_review.json`; progress + approvals in `.manual_review_progress.json` (resume-safe).
-
-| Action | Keys | Effect |
-|--------|------|--------|
-| Approve | `1`, `A` | Mark reviewed; nothing written to rejects |
-| Incorrect speaker | `2`, `S` | Reject with reason `incorrect_speaker` |
-| Overlap voice | `3`, `O` | Reject with reason `overlap_voice` |
-| Replay | `Space` | Restart the clip |
-| Undo | `U` | Undo the last decision |
-
-CLI flags (all optional): `--run-dir`, `--audio-dir`, `--labeled-dir`, `--output`, `--progress`, `--port` (default `7861`), `--no-browser`. All path defaults resolve off `--run-dir`.
-
-No stage currently consumes `manual_review.json` — it's raw input for an ad-hoc re-run or a future filter-step extension.
