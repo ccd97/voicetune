@@ -179,8 +179,9 @@ def main():
         description="Run the full audio processing pipeline"
     )
     parser.add_argument(
-        "--mode", choices=["aws", "whisperx", "mlx", "llamacpp"], default="mlx",
-        help="Diarization backend (default: mlx)"
+        "--mode", choices=["aws", "whisperx", "mlx", "llamacpp"],
+        default=os.environ.get("DIARIZE_MODE", "whisperx"),
+        help="Diarization backend (default: whisperx, or $DIARIZE_MODE)"
     )
     parser.add_argument(
         "--num-speakers", type=int, default=None,

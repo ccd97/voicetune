@@ -47,9 +47,9 @@ def main():
     )
     parser.add_argument(
         "--keep-languages", type=str, default=None,
-        help="Comma-separated list of language buckets to keep "
-             "(english, hindi, marathi, mixed, devanagari_unknown, other). "
-             "Example: --keep-languages english,hindi. Default: keep all."
+        help="Comma-separated language-code prefixes to keep; a call is kept if its "
+             "`language` starts with any prefix (e.g. --keep-languages hi,mr,en). "
+             "Default: keep all."
     )
     parser.add_argument(
         "--test", action="store_true",
@@ -71,7 +71,9 @@ def main():
 
     keep_languages: set[str] | None = None
     if args.keep_languages:
-        keep_languages = {s.strip() for s in args.keep_languages.split(",") if s.strip()}
+        keep_languages = {
+            s.strip().lower() for s in args.keep_languages.split(",") if s.strip()
+        }
 
     if not args.no_prepare:
         log.info(f"Preparing dataset from {args.labeled_dir}")

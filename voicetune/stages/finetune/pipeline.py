@@ -2,7 +2,6 @@
 
 import logging
 import random
-import re
 import shutil
 from collections import Counter
 from pathlib import Path
@@ -17,27 +16,6 @@ from voicetune.common import (
 from voicetune.stages.segment.paths import turn_wav_name
 
 log = logging.getLogger(__name__)
-
-
-_DEVANAGARI_RE = re.compile(r"[\u0900-\u097F]")
-_LATIN_RE = re.compile(r"[A-Za-z]")
-
-
-def _classify_language(text: str, call_lang: str | None) -> str:
-    """Bucket a turn by script; fall back to the call-level language for pure Devanagari."""
-    has_dev = bool(_DEVANAGARI_RE.search(text))
-    has_lat = bool(_LATIN_RE.search(text))
-    if has_dev and has_lat:
-        return "mixed"
-    if has_lat:
-        return "english"
-    if not has_dev:
-        return "other"
-    if call_lang and call_lang.lower().startswith("mr"):
-        return "marathi"
-    if call_lang and call_lang.lower().startswith("hi"):
-        return "hindi"
-    return "devanagari_unknown"
 
 
 def _strip_private(entry: dict) -> dict:
@@ -64,15 +42,35 @@ def prepare_dataset(
     entries_by_call: dict[str, list[dict]] = {}
     all_stats = []
 
+    skipped_calls_by_language = 0
+
     for call_dir in call_dirs:
         call_id = call_dir.name
         dialogue = read_json(call_dir / "dialogue.json")
 
         call_lang = dialogue.get("language")
+
+        if keep_languages is not None:
+            lang_norm = (call_lang or "").lower()
+            if not any(lang_norm.startswith(code) for code in keep_languages):
+                skipped_calls_by_language += 1
+                log.info(
+                    f"  {call_id}: skipped, language {call_lang!r} not in "
+                    f"{sorted(keep_languages)}"
+                )
+                all_stats.append({
+                    "call_id": call_id,
+                    "call_language": call_lang,
+                    "exported": 0,
+                    "skipped_other": 0,
+                    "capped_from": 0,
+                    "skipped_by_language": True,
+                })
+                continue
+
         audio_dir = filtered_dir / call_id
         call_entries: list[dict] = []
         skipped_other = 0
-        skipped_language = 0
 
         for turn in dialogue["turns"]:
             if turn.get("speaker_label") != "me":
@@ -87,10 +85,6 @@ def prepare_dataset(
             duration = round(audio_duration(src_audio), 2)
 
             text = turn["text"].strip()
-            lang = _classify_language(text, call_lang)
-            if keep_languages is not None and lang not in keep_languages:
-                skipped_language += 1
-                continue
 
             dst_audio = me_dir / turn_wav_name(call_id, turn["turn"])
             shutil.copy2(str(src_audio), str(dst_audio))
@@ -99,7 +93,7 @@ def prepare_dataset(
                 "audio": str(dst_audio.resolve()),
                 "text": text,
                 "duration": duration,
-                "_lang": lang,
+                "_lang": call_lang,
             })
 
         capped_from = len(call_entries)
@@ -114,12 +108,9 @@ def prepare_dataset(
             "call_language": call_lang,
             "exported": len(call_entries),
             "skipped_other": skipped_other,
-            "skipped_language": skipped_language,
             "capped_from": capped_from,
         }
         msg = f"  {call_id}: exported {len(call_entries)}, skipped {skipped_other} non-'me'"
-        if skipped_language:
-            msg += f", {skipped_language} not in keep-languages"
         if capped_from > max_turns_per_call:
             msg += f", capped from {capped_from}"
         log.info(msg)
@@ -154,6 +145,7 @@ def prepare_dataset(
         "output_dir": str(output_dir),
         "max_turns_per_call": max_turns_per_call,
         "keep_languages": sorted(keep_languages) if keep_languages else None,
+        "skipped_calls_by_language": skipped_calls_by_language,
         "train_language_counts": dict(train_lang_counts),
         "val_language_counts": dict(val_lang_counts),
         "calls": all_stats,

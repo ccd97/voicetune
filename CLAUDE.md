@@ -16,3 +16,12 @@ Audio processing pipeline for voice fine-tuning. Run the full pipeline via `pyth
 - **No module-level side effects** in library code. `load_dotenv()`, `setup_logging()`, etc. belong inside `main()` or CLI entry points only.
 - **Remove unused imports.** Do not leave imports "for later."
 - **Keep behavior unchanged** unless fixing a clear bug. Prefer minimal, focused edits over broad rewrites.
+
+## End of task checklist
+
+At the end of any task:
+
+1. Verify the changes follow the code style rules above (no AI slop).
+2. Verify no bugs are introduced in the changed files/logic. Do a dry run if needed.
+3. Update `llm-notes/` if necessary. Keep notes concise and factual — no AI slop, only necessary info.
+4. If the changes are large, suggest the user commit the code.

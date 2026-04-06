@@ -66,7 +66,7 @@ File-level (trigger rejection):
 | `mono_speaker` | Pre-LLM: `num_speakers < 2` |
 | `low_confidence` | Min batch confidence < 0.60 |
 
-To re-run a subset (e.g. only rejected files, or those with a specific reason) use `voicetune/scripts/rerun.py` — loads validated JSON into an in-memory SQLite DB and filters via `--where` / `--sql` / `--ids`. See `scripts.md`.
+To re-run a subset (e.g. only rejected files, or those with a specific reason) use `voicetune/scripts/invalidate.py` — loads validated JSON into an in-memory SQLite DB and filters via `--where` / `--sql` / `--ids`. See `scripts.md`.
 
 ## Backend
 

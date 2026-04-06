@@ -19,7 +19,7 @@ Run VoxCPM2 LoRA fine-tuning on a GCP A100 VM. Uploads training data to GCS, pol
 | `--no-prepare` | `False` | Skip dataset preparation (use existing data) |
 | `--max-steps` | `200` | Training steps (effective batch size 16; ~3 epochs on ~1k clips) |
 | `--max-turns-per-call` | `50` | Per-call turn cap |
-| `--keep-languages` | _(all)_ | Comma-separated list of language buckets to keep (e.g. `english,hindi`). Valid: `english`, `hindi`, `marathi`, `mixed`, `devanagari_unknown`, `other` |
+| `--keep-languages` | _(all)_ | Comma-separated language-code prefixes to keep (e.g. `hi,mr,en`). A call is kept if its `language` starts with any prefix (case-insensitive) |
 | `--test` | `False` | Spot A100, 1 step, auto-delete |
 | `--output-dir` | `<run-dir>/finetune` | Where to download the LoRA adapter |
 
@@ -27,7 +27,7 @@ Run VoxCPM2 LoRA fine-tuning on a GCP A100 VM. Uploads training data to GCS, pol
 
 ### Local Side (pipeline.py)
 
-1. Prepares dataset: reads labeled `dialogue.json` from `output/labeled/`, copies matching "me" turn WAVs from `output/filtered/` to `output/voxcpm/data/me/*.wav`, and emits `train.jsonl` + `val.jsonl` (random 6% turn-level holdout, seed=0; val split is skipped when `total <= 20` turns). Calls with more than `max_turns_per_call` turns (CLI default 50) are downsampled with a stable seed. When `keep_languages` is set, clips are classified by `_classify_language` and only allowed buckets are kept (e.g. `--keep-languages english,hindi` drops Marathi).
+1. Prepares dataset: reads labeled `dialogue.json` from `output/labeled/`, copies matching "me" turn WAVs from `output/filtered/` to `output/voxcpm/data/me/*.wav`, and emits `train.jsonl` + `val.jsonl` (random 6% turn-level holdout, seed=0; val split is skipped when `total <= 20` turns). Calls with more than `max_turns_per_call` turns (CLI default 50) are downsampled with a stable seed. When `keep_languages` is set, calls whose `dialogue.language` does not start with any listed prefix are skipped entirely (e.g. `--keep-languages hi,mr` drops English calls).
 2. Validates `{data-dir}/train.jsonl` is present and well-formed.
 3. Creates GCS bucket if needed, grants compute SA access.
 4. Zips the dataset directory and uploads `training-data.zip` to `gs://voicetune-finetune-cdcunha/`.
@@ -129,7 +129,7 @@ gcloud compute instances get-serial-port-output voicetune-finetune --zone=ZONE -
 - Learning rate 5e-4, 5× VoxCPM's LoRA default. 1e-4 for 200 steps moved val/loss 1.7% (effective ΔW 7.5 vs 16.9 at 800 steps); grad norms sit at 0.1–0.2 so the 1.0 clip never fires.
 - 1–3 epochs for single-speaker cloning. 300–900 clips at effective bs 16 is ~20–170 steps; `--max-steps 200` gives ~3 epochs on ~1k clips. An 800-step run regressed `val/loss/total` from 0.924 → 1.105.
 - Best-step selection reads `val/loss/total` from TensorBoard (VoxCPM splits val loss into `total`/`diff`/`stop`; there's no bare `val/loss` tag). Falls back to the latest step when no val manifest exists.
-- Language mix: when one language dominates, the LoRA anchors voice identity to it and other-language inference reverts to the base prior. `prepare_dataset` classifies by script (Latin → English, Devanagari + Latin → mixed) plus the call-level `language` (`mr-IN` → Marathi, `hi` → Hindi). `--keep-languages english,hindi` drops the rest. Oversampling 65 Hindi clips 7–8× made it worse.
+- Language mix: when one language dominates, the LoRA anchors voice identity to it and other-language inference reverts to the base prior. `--keep-languages hi,mr,en` keeps calls whose `dialogue.language` starts with any of those prefixes (matched case-insensitively). Oversampling 65 Hindi clips 7–8× made it worse.
 - Per-call cap `--max-turns-per-call 50` stops one long call from dominating: in the first run a single 177-turn call was 16% of the data.
 - Duration bounds (`--min-duration 3.0 --max-duration 45.0`) live in the filter stage; finetune consumes `output/filtered/` as-is.
 - Trailing silence >0.5 s causes "run-away" inference. The filter stage drops decayed clips via `TAIL_DECAY_CODE`; if run-away still shows up, add `librosa.effects.trim(top_db=40)` in `prepare_dataset`.

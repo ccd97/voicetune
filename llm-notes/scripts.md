@@ -5,7 +5,7 @@ Standalone helpers that sit alongside the numbered pipeline stages. None of them
 | Script | Purpose |
 |--------|---------|
 | `voicetune/scripts/filter_stats.py` | Compact per-stage dashboard across `output/` |
-| `voicetune/scripts/rerun.py` | SQL-driven selective re-run / turn repair |
+| `voicetune/scripts/invalidate.py` | SQL-driven selective re-run |
 | `voicetune/scripts/manual_review.py` | Local browser UI for listening to each "me" clip and tagging rejects |
 
 ## filter_stats.py — Pipeline dashboard
@@ -16,23 +16,22 @@ Walks each stage's output directory under `--run-dir` and prints a boxed summary
 
 Purely read-only; no side effects. Use after any stage to sanity-check volumes and language mix before moving on.
 
-## rerun.py — SQL-driven re-run and turn repair
+## invalidate.py — SQL-driven re-run
 
 **Run:**
 ```bash
-python voicetune/scripts/rerun.py --where "language LIKE 'hi%'" --steps 2-4 --execute
-python voicetune/scripts/rerun.py --where "call_id IN (SELECT call_id FROM turn_issues WHERE issue='garbled_transcript')" --fix-turns --execute
-python voicetune/scripts/rerun.py --schema
+python voicetune/scripts/invalidate.py --where "language LIKE 'hi%'" --steps 2-4 --execute
+python voicetune/scripts/invalidate.py --where "call_id IN (SELECT call_id FROM turn_issues WHERE issue='garbled_transcript')" --execute
+python voicetune/scripts/invalidate.py --schema
 ```
 
 Builds an in-memory SQLite database by scanning `output/validated/*_validated.json` + `output/preprocessed/*/metadata.json`, then selects `call_id`s via a `--where` clause (against the `calls` table) or a full `--sql` query. Schema: `calls`, `reject_reasons`, `turns`, `turn_issues` (print via `--schema`).
 
-Two modes:
-
-1. Delete outputs for selective re-run (default) — deletes matched calls' intermediate artifacts for the steps given in `--steps` (2=diarize, 3=scrub, 4=validation; range `2-4` or list `2,4`). The next pipeline run regenerates only those calls.
-2. Fix turns in place (`--fix-turns`) — for each flagged turn in matched calls, clips the audio from `output/preprocessed/{call}/full_normalized.wav`, sends it to Claude (Vertex AI) with ±3 turns of context, and rewrites the transcript in `output/validated/{call}_validated.json`. Skips turns whose neighbors are also flagged (context would be garbage). Model defaults to `claude-haiku-4-5`; override with `FIX_TURNS_MODEL`. Requires `GCP_PROJECT_ID` in `.env` (optional `VERTEX_LOCATION`, default `us-east5`). Up to 10 calls in parallel.
+Deletes matched calls' intermediate artifacts for the steps given in `--steps` (2=diarize, 3=scrub, 4=validation; range `2-4` or list `2,4`).
 
 Always a dry run unless `--execute` is passed. `--list` prints matched call IDs (with per-call turn-issue counts) before committing.
+
+After invalidating, just re-run the pipeline as usual (`python -m voicetune.run ...`) — each stage skips calls whose output files still exist, so it will only regenerate the artifacts that were deleted and leave everything else untouched.
 
 ## manual_review.py — Per-clip "me" manual review UI
 

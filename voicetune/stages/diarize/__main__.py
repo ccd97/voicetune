@@ -2,6 +2,7 @@
 
 import argparse
 import logging
+import os
 import warnings
 from pathlib import Path
 
@@ -31,8 +32,9 @@ def main():
         help="Base output directory (default: ./output)"
     )
     parser.add_argument(
-        "--mode", choices=["aws", "whisperx", "mlx", "llamacpp"], required=True,
-        help="Diarization backend: 'aws', 'whisperx', 'mlx' (Apple Silicon), or 'llamacpp' (Gemma 4 audio)"
+        "--mode", choices=["aws", "whisperx", "mlx", "llamacpp"],
+        default=os.environ.get("DIARIZE_MODE"), required="DIARIZE_MODE" not in os.environ,
+        help="Diarization backend: 'aws', 'whisperx', 'mlx' (Apple Silicon), or 'llamacpp' (Gemma 4 audio). Falls back to $DIARIZE_MODE."
     )
     parser.add_argument(
         "--input-dir", type=Path, default=None,
