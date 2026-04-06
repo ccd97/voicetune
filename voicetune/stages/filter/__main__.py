@@ -4,15 +4,18 @@ import argparse
 import logging
 from pathlib import Path
 
+from voicetune.common import (
+    bootstrap,
+    resolve_stage_paths,
+)
+
 from .pipeline import MAX_TURN_DURATION, MIN_TURN_DURATION, process_call
 
 log = logging.getLogger(__name__)
 
 
 def main():
-    from voicetune.common import setup_logging
-
-    setup_logging()
+    bootstrap()
 
     parser = argparse.ArgumentParser(
         description="Filter segmented calls: apply validation + duration + audio-quality drops "
@@ -40,19 +43,13 @@ def main():
     )
     args = parser.parse_args()
 
-    if args.input_dir is None:
-        args.input_dir = args.run_dir / "segmented"
-    if args.output_dir is None:
-        args.output_dir = args.run_dir / "filtered"
+    resolve_stage_paths(args, input_dir="segmented", output_dir="filtered")
 
     if not args.input_dir.is_dir():
         log.error(f"Input directory does not exist: {args.input_dir}")
         return
 
-    call_dirs = sorted(
-        d for d in args.input_dir.iterdir()
-        if d.is_dir() and (d / "dialogue.json").exists()
-    )
+    call_dirs = sorted(p.parent for p in args.input_dir.glob("*/dialogue.json"))
     if not call_dirs:
         log.error(f"No segmented call directories found in {args.input_dir}")
         return

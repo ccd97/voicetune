@@ -8,7 +8,7 @@ import urllib.request
 import uuid
 from pathlib import Path
 
-from voicetune.common import get_call_id
+from voicetune.stages.preprocess.paths import get_call_id
 
 log = logging.getLogger(__name__)
 

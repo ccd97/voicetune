@@ -8,15 +8,21 @@ Usage:
 """
 
 import argparse
-import base64
-import io
-import json
 import logging
 import os
 import sqlite3
 from pathlib import Path
 
-from dotenv import load_dotenv
+from voicetune.common import (
+    bootstrap,
+    clip_turn_audio,
+    extract_json,
+    parse_int_ranges,
+    read_json,
+    turn_duration,
+    unique_speakers,
+    write_json,
+)
 
 log = logging.getLogger(__name__)
 
@@ -66,8 +72,7 @@ def build_db(validated_dir: Path, preprocessed_dir: Path) -> sqlite3.Connection:
     conn.executescript(SCHEMA_SQL)
 
     for path in sorted(validated_dir.glob("*_validated.json")):
-        with open(path) as f:
-            data = json.load(f)
+        data = read_json(path)
 
         cid = data["call_id"]
 
@@ -75,8 +80,7 @@ def build_db(validated_dir: Path, preprocessed_dir: Path) -> sqlite3.Connection:
         duration = None
         snr_db = None
         if meta_path.exists():
-            with open(meta_path) as f:
-                meta = json.load(f)
+            meta = read_json(meta_path)
             duration = meta.get("output_duration_seconds")
             snr_db = meta.get("snr_db")
 
@@ -103,26 +107,6 @@ def build_db(validated_dir: Path, preprocessed_dir: Path) -> sqlite3.Connection:
     return conn
 
 
-def parse_steps(spec: str) -> set[int]:
-    selected = set()
-    for part in spec.split(","):
-        part = part.strip()
-        if "-" in part:
-            lo, hi = part.split("-", 1)
-            lo, hi = int(lo), int(hi)
-            if lo < 2 or hi > 4 or lo > hi:
-                raise ValueError(f"Invalid range {lo}-{hi} (steps must be 2-4)")
-            selected.update(range(lo, hi + 1))
-        elif part.isdigit():
-            n = int(part)
-            if n < 2 or n > 4:
-                raise ValueError(f"Invalid step {n} (steps must be 2-4)")
-            selected.add(n)
-        else:
-            raise ValueError(f"Unknown step: {part}")
-    return selected
-
-
 def run_query(conn: sqlite3.Connection, sql: str) -> list[str]:
     rows = conn.execute(sql).fetchall()
     return sorted({row[0] for row in rows})
@@ -143,18 +127,6 @@ def delete_outputs(call_id: str, steps: set[int]) -> int:
 
 def print_schema():
     print(SCHEMA_SQL)
-
-
-def clip_turn_audio(wav_path: Path, start: float, end: float) -> str:
-    import soundfile as sf
-
-    info = sf.info(str(wav_path))
-    sr = info.samplerate
-    audio, _ = sf.read(str(wav_path), start=int(start * sr), stop=int(end * sr))
-
-    buf = io.BytesIO()
-    sf.write(buf, audio, sr, format="WAV", subtype="PCM_16")
-    return base64.standard_b64encode(buf.getvalue()).decode()
 
 
 CONTEXT_TURNS = 3
@@ -221,15 +193,16 @@ def transcribe_turn(client, model: str, b64_audio: str,
             ],
         }],
     )
-    raw = response.content[0].text.strip()
+    raw = response.content[0].text
 
-    start = raw.find("{")
-    end = raw.rfind("}") + 1
-    if start < 0 or end <= start:
+    try:
+        parsed = extract_json(raw, prefer="object", strip_fences=False)
+    except ValueError:
         log.warning(f"Could not parse response: {raw[:120]}")
         return None
-
-    parsed = json.loads(raw[start:end])
+    if not isinstance(parsed, dict):
+        log.warning(f"Expected object response, got {type(parsed).__name__}: {raw[:120]}")
+        return None
     return parsed.get("turns")
 
 
@@ -246,12 +219,11 @@ def _fix_one_call(cid: str, validated_dir: Path, preprocessed_dir: Path,
     if not val_path.exists() or not wav_path.exists():
         return 0, 0
 
-    with open(val_path) as f:
-        data = json.load(f)
+    data = read_json(val_path)
 
     turns = data.get("turns", [])
     language = data.get("language", "unknown")
-    speakers = sorted({t["speaker"] for t in turns})
+    speakers = unique_speakers(turns)
     flagged = [(i, turn) for i, turn in enumerate(turns) if turn.get("issues")]
 
     if not flagged:
@@ -282,7 +254,7 @@ def _fix_one_call(cid: str, validated_dir: Path, preprocessed_dir: Path,
             skipped += 1
             continue
 
-        duration = turn["end"] - turn["start"]
+        duration = turn_duration(turn)
         n = len(result)
         for j, new_turn in enumerate(result):
             new_turn["start"] = round(turn["start"] + duration * j / n, 3)
@@ -297,8 +269,7 @@ def _fix_one_call(cid: str, validated_dir: Path, preprocessed_dir: Path,
         fixed += 1
 
     data["turns"] = turns
-    with open(val_path, "w") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
+    write_json(val_path, data)
 
     return fixed, skipped
 
@@ -313,8 +284,7 @@ def fix_turns(call_ids: list[str], validated_dir: Path, preprocessed_dir: Path,
             val_path = validated_dir / f"{cid}_validated.json"
             if not val_path.exists():
                 continue
-            with open(val_path) as f:
-                data = json.load(f)
+            data = read_json(val_path)
             n = sum(1 for t in data.get("turns", []) if t.get("issues"))
             if n:
                 log.info(f"{cid}: {n} turn(s) with issues")
@@ -348,8 +318,7 @@ def fix_turns(call_ids: list[str], validated_dir: Path, preprocessed_dir: Path,
 
 
 def main():
-    load_dotenv()
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    bootstrap(dotenv=True)
 
     parser = argparse.ArgumentParser(
         description="Delete pipeline outputs for selected recordings so they can be re-run",
@@ -380,7 +349,7 @@ examples:
     exe.add_argument("--list", action="store_true",
                      help="Print matched call IDs")
     exe.add_argument("--fix-turns", action="store_true",
-                     help="Re-transcribe flagged turns via Bedrock instead of deleting outputs")
+                     help="Re-transcribe flagged turns via Vertex AI instead of deleting outputs")
     exe.add_argument("--execute", action="store_true",
                      help="Actually apply changes (default is dry-run)")
 
@@ -427,7 +396,7 @@ examples:
         fix_turns(call_ids, VALIDATED_DIR, PREPROCESSED_DIR, args.execute)
         return
 
-    steps = parse_steps(args.steps)
+    steps = parse_int_ranges(args.steps, 2, 4)
     log.info(f"Selected {len(call_ids)} recording(s), will delete outputs for steps {sorted(steps)}")
 
     if not args.execute:

@@ -3,7 +3,6 @@
 Launched by `python -m voicetune.stages.infer`.
 """
 
-import json
 import logging
 import random
 import tempfile
@@ -14,6 +13,8 @@ import numpy as np
 import soundfile as sf
 import torch
 from voxcpm import VoxCPM
+
+from voicetune.common import read_json
 
 log = logging.getLogger(__name__)
 
@@ -53,7 +54,7 @@ def _load_lora_config(lora_dir: Path):
         log.warning(f"No lora_config.json in {lora_dir} -- letting VoxCPM use defaults (will fail if r!=8)")
         return None
 
-    data = json.loads(cfg_path.read_text())
+    data = read_json(cfg_path)
     fields = data.get("lora_config", data)
 
     # target_proj_modules including "fusion_concat_proj" is V2-only; detect and

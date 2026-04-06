@@ -14,16 +14,13 @@ import os
 import sys
 from pathlib import Path
 
+from voicetune.common import bootstrap, resolve_stage_paths
+
 log = logging.getLogger(__name__)
 
 
 def main():
-    from dotenv import load_dotenv
-
-    from voicetune.common import setup_logging
-
-    load_dotenv()
-    setup_logging()
+    bootstrap(dotenv=True)
 
     parser = argparse.ArgumentParser(
         description="Local Gradio UI for VoxCPM2 + LoRA inference"
@@ -58,10 +55,11 @@ def main():
     )
     args = parser.parse_args()
 
-    if args.lora_dir is None:
-        args.lora_dir = args.run_dir / "finetune" / "voxcpm2-lora" / "latest"
-    if args.sample_dir is None:
-        args.sample_dir = args.run_dir / "voxcpm" / "data" / "me"
+    resolve_stage_paths(
+        args,
+        lora_dir="finetune/voxcpm2-lora/latest",
+        sample_dir="voxcpm/data/me",
+    )
 
     try:
         import voxcpm  # noqa: F401

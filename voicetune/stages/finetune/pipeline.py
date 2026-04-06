@@ -1,6 +1,5 @@
 """Fine-tuning pipeline: dataset preparation, validation, and GCP dispatch."""
 
-import json
 import logging
 import random
 import re
@@ -8,7 +7,14 @@ import shutil
 from collections import Counter
 from pathlib import Path
 
-import soundfile as sf
+from voicetune.common import (
+    audio_duration,
+    read_json,
+    read_jsonl,
+    write_json,
+    write_jsonl,
+)
+from voicetune.stages.segment.paths import turn_wav_name
 
 log = logging.getLogger(__name__)
 
@@ -34,12 +40,6 @@ def _classify_language(text: str, call_lang: str | None) -> str:
     return "devanagari_unknown"
 
 
-def _write_jsonl(path: Path, entries: list[dict]) -> None:
-    with path.open("w", encoding="utf-8") as f:
-        for entry in entries:
-            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-
-
 def _strip_private(entry: dict) -> dict:
     return {k: v for k, v in entry.items() if not k.startswith("_")}
 
@@ -56,10 +56,7 @@ def prepare_dataset(
     me_dir = output_dir / "me"
     me_dir.mkdir(parents=True, exist_ok=True)
 
-    call_dirs = sorted(
-        d for d in labeled_dir.iterdir()
-        if d.is_dir() and (d / "dialogue.json").exists()
-    )
+    call_dirs = sorted(p.parent for p in labeled_dir.glob("*/dialogue.json"))
     if not call_dirs:
         raise FileNotFoundError(f"No labeled calls found in {labeled_dir}")
 
@@ -69,8 +66,7 @@ def prepare_dataset(
 
     for call_dir in call_dirs:
         call_id = call_dir.name
-        with open(call_dir / "dialogue.json") as f:
-            dialogue = json.load(f)
+        dialogue = read_json(call_dir / "dialogue.json")
 
         call_lang = dialogue.get("language")
         audio_dir = filtered_dir / call_id
@@ -88,8 +84,7 @@ def prepare_dataset(
                 log.warning(f"  Missing audio: {src_audio}")
                 continue
 
-            info = sf.info(str(src_audio))
-            duration = round(info.frames / info.samplerate, 2)
+            duration = round(audio_duration(src_audio), 2)
 
             text = turn["text"].strip()
             lang = _classify_language(text, call_lang)
@@ -97,8 +92,7 @@ def prepare_dataset(
                 skipped_language += 1
                 continue
 
-            base_name = f"{call_id}_turn_{turn['turn']:03d}"
-            dst_audio = me_dir / f"{base_name}.wav"
+            dst_audio = me_dir / turn_wav_name(call_id, turn["turn"])
             shutil.copy2(str(src_audio), str(dst_audio))
 
             call_entries.append({
@@ -149,9 +143,9 @@ def prepare_dataset(
     train_lang_counts = Counter(e["_lang"] for e in train_entries)
     val_lang_counts = Counter(e["_lang"] for e in val_entries)
 
-    _write_jsonl(output_dir / "train.jsonl", [_strip_private(e) for e in train_entries])
+    write_jsonl(output_dir / "train.jsonl", [_strip_private(e) for e in train_entries])
     if val_entries:
-        _write_jsonl(output_dir / "val.jsonl", [_strip_private(e) for e in val_entries])
+        write_jsonl(output_dir / "val.jsonl", [_strip_private(e) for e in val_entries])
 
     summary = {
         "total_exported": total,
@@ -164,8 +158,7 @@ def prepare_dataset(
         "val_language_counts": dict(val_lang_counts),
         "calls": all_stats,
     }
-    with open(output_dir / "export_summary.json", "w") as f:
-        json.dump(summary, f, indent=2)
+    write_json(output_dir / "export_summary.json", summary, ensure_ascii=True)
 
     log.info(
         f"Dataset: {total} utterances, "
@@ -182,19 +175,13 @@ def validate_data(data_dir: Path) -> int:
         raise FileNotFoundError(
             f"No training manifest at {train_manifest}. Run prepare_dataset first."
         )
-    count = 0
-    with train_manifest.open() as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            entry = json.loads(line)
-            if "audio" not in entry or "text" not in entry:
-                raise ValueError(f"Manifest entry missing audio/text: {entry}")
-            count += 1
-    if count == 0:
+    entries = read_jsonl(train_manifest)
+    for entry in entries:
+        if "audio" not in entry or "text" not in entry:
+            raise ValueError(f"Manifest entry missing audio/text: {entry}")
+    if not entries:
         raise ValueError(f"Training manifest is empty: {train_manifest}")
-    return count
+    return len(entries)
 
 
 def run_finetune(

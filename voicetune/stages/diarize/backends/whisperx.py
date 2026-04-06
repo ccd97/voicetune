@@ -1,4 +1,4 @@
-"""WhisperX local diarization backend."""
+"""WhisperX local diarization backend. On MPS, transcription swaps to mlx-whisper."""
 
 import logging
 import os
@@ -6,7 +6,7 @@ import warnings
 from pathlib import Path
 
 from voicetune.common import merge_segments_to_turns
-from voicetune.common import get_call_id
+from voicetune.stages.preprocess.paths import get_call_id
 
 warnings.filterwarnings("ignore", message=".*gradient_checkpointing.*")
 
@@ -46,14 +46,28 @@ def _get_diarize_model(device):
 
 
 def diarize(audio_path: Path, num_speakers: int | None = None, language: str | None = None) -> dict:
+    import torch
     import whisperx
     from whisperx.diarize import assign_word_speakers
 
-    model, device = _get_whisper_model()
-
-    log.info("Transcribing...")
     audio = whisperx.load_audio(str(audio_path))
-    result = model.transcribe(audio, batch_size=16 if device == "cuda" else 4)
+
+    if torch.backends.mps.is_available():
+        import mlx_whisper
+        log.info("MPS available, transcribing with mlx-whisper...")
+        transcribe_kwargs = {}
+        if language:
+            transcribe_kwargs["language"] = language
+        result = mlx_whisper.transcribe(
+            str(audio_path),
+            path_or_hf_repo="mlx-community/whisper-large-v3-turbo",
+            **transcribe_kwargs,
+        )
+        device = "cpu"
+    else:
+        model, device = _get_whisper_model()
+        log.info("Transcribing...")
+        result = model.transcribe(audio, batch_size=16 if device == "cuda" else 4)
 
     detected_lang = result.get("language", "en")
     align_lang = detected_lang if detected_lang in SUPPORTED_ALIGN_LANGS else "en"

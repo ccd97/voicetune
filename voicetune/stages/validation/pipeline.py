@@ -3,40 +3,25 @@
 Takes diarized transcripts and uses an LLM to validate speaker
 assignments using conversational context. Diarization often
 misattributes turns — the LLM uses dialogue flow, names, and
-context to fix these errors. Supports Bedrock (Claude) and llama.cpp backends.
+context to fix these errors. Runs on a local llama.cpp model.
 """
 
-import json
 import logging
 import os
 from enum import Enum
 from pathlib import Path
 
 from voicetune import prompts
+from voicetune.common import (
+    extract_json,
+    generate_text,
+    load_llm,
+    read_json,
+    unique_speakers,
+    write_json,
+)
 
 log = logging.getLogger(__name__)
-
-_llm = None
-
-
-def _get_llm():
-    global _llm
-    if _llm is not None:
-        return _llm
-
-    from llama_cpp import Llama
-
-    model_path = os.environ["LLAMACPP_MODEL_PATH"]
-    log.info(f"Loading llama.cpp model for validation: {model_path}")
-
-    _llm = Llama(
-        model_path=model_path,
-        n_ctx=8192,
-        n_gpu_layers=-1,
-        n_threads=os.cpu_count() or 4,
-        verbose=False,
-    )
-    return _llm
 
 
 class RejectReason(str, Enum):
@@ -85,13 +70,7 @@ MAX_PARSE_RETRIES = 2
 
 
 def build_prompt(turns: list[dict], offset: int = 0, context: list[dict] | None = None) -> str:
-    """Build a prompt for Claude to re-assign speaker labels.
-
-    Args:
-        turns: The turns to correct (indices in the response will be offset-based).
-        offset: Global index offset for turn numbering.
-        context: Previous turns (already validated) included for continuity but NOT in the response.
-    """
+    """Prompt the LLM to re-assign speaker labels for `turns`; `context` is prior already-validated turns."""
     parts = []
 
     if context:
@@ -124,73 +103,32 @@ def build_prompt(turns: list[dict], offset: int = 0, context: list[dict] | None 
 
 
 def parse_response(response_text: str, num_turns: int) -> tuple[list[dict], float, list[RejectReason]]:
-    """Parse Claude's response into speaker assignments, confidence, and issues."""
-    text = response_text.strip()
-    valid_reasons = {r.value for r in RejectReason}
+    """Parse the LLM's response into speaker assignments, confidence, and issues."""
+    parsed = extract_json(response_text, prefer="object", strip_fences=False)
 
-    # Try parsing as a JSON object with confidence + assignments + issues
-    obj_start = text.find("{")
-    obj_end = text.rfind("}")
-    if obj_start != -1 and obj_end != -1:
-        parsed = json.loads(text[obj_start:obj_end + 1])
-        if "assignments" in parsed:
-            confidence = float(parsed.get("confidence", -1.0))
-            assignments = parsed["assignments"]
-            raw_issues = parsed.get("issues", [])
-            issues = [RejectReason(i) for i in raw_issues if i in valid_reasons]
-            if len(assignments) != num_turns:
-                log.warning(
-                    f"Expected {num_turns} assignments, got {len(assignments)}. "
-                    "Using original labels for missing turns."
-                )
-            return assignments, confidence, issues
+    if isinstance(parsed, dict) and "assignments" in parsed:
+        assignments = parsed["assignments"]
+        confidence = float(parsed.get("confidence", -1.0))
+        valid_reasons = {r.value for r in RejectReason}
+        issues = [RejectReason(i) for i in parsed.get("issues", []) if i in valid_reasons]
+    elif isinstance(parsed, list):
+        assignments = parsed
+        confidence = -1.0
+        issues = []
+    else:
+        raise ValueError("No JSON assignments found in response")
 
-    # Fallback: bare JSON array (no confidence available)
-    arr_start = text.find("[")
-    arr_end = text.rfind("]")
-    if arr_start == -1 or arr_end == -1:
-        raise ValueError("No JSON found in response")
-
-    assignments = json.loads(text[arr_start:arr_end + 1])
     if len(assignments) != num_turns:
         log.warning(
             f"Expected {num_turns} assignments, got {len(assignments)}. "
             "Using original labels for missing turns."
         )
-    return assignments, -1.0, []
+    return assignments, confidence, issues
 
 
-def _call_llm_bedrock(http_client, base_url: str, auth_token: str, model: str, prompt: str, max_tokens: int = 8192) -> str:
-    response = http_client.post(
-        f"{base_url}/model/{model}/invoke",
-        headers={
-            "Authorization": f"Bearer {auth_token}",
-            "Content-Type": "application/json",
-        },
-        json={
-            "anthropic_version": "bedrock-2023-05-31",
-            "max_tokens": max_tokens,
-            "messages": [{"role": "user", "content": prompt}],
-        },
-        timeout=120,
-    )
-    response.raise_for_status()
-    return response.json()["content"][0]["text"]
-
-
-def _call_llm_llamacpp(llm, prompt: str, max_tokens: int = 8192) -> str:
-    response = llm.create_chat_completion(
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.0,
-        max_tokens=max_tokens,
-    )
-    return response["choices"][0]["message"]["content"]
-
-
-def process_file(input_path: Path, output_dir: Path, backend: str = "llamacpp") -> dict:
+def process_file(input_path: Path, output_dir: Path) -> dict:
     """Correct speaker assignments in a diarized transcript."""
-    with open(input_path) as f:
-        data = json.load(f)
+    data = read_json(input_path)
 
     call_id = data["call_id"]
     turns = data["turns"]
@@ -210,10 +148,8 @@ def process_file(input_path: Path, output_dir: Path, backend: str = "llamacpp") 
         output["reject_reasons"] = reject_reasons
         output["validation_confidence"] = -1.0
 
-        output_dir.mkdir(parents=True, exist_ok=True)
         out_path = output_dir / f"{call_id}_validated.json"
-        with open(out_path, "w") as f:
-            json.dump(output, f, indent=2, ensure_ascii=False)
+        write_json(out_path, output)
 
         return {
             "rejected": True,
@@ -224,23 +160,12 @@ def process_file(input_path: Path, output_dir: Path, backend: str = "llamacpp") 
             "num_speakers": num_speakers,
         }
 
-    if backend == "bedrock":
-        import httpx
-        base_url = os.environ["ANTHROPIC_BEDROCK_BASE_URL"]
-        auth_token = os.environ["ANTHROPIC_AUTH_TOKEN"]
-        model = os.environ.get("VALIDATION_MODEL", "us.anthropic.claude-haiku-4-5-20251001-v1:0")
-        ca_certs = os.environ.get("NODE_EXTRA_CA_CERTS", True)
-        http_client = httpx.Client(verify=ca_certs)
-        call_fn = lambda prompt, max_tokens=8192: _call_llm_bedrock(http_client, base_url, auth_token, model, prompt, max_tokens)
-        model_label = model
-    else:
-        llm = _get_llm()
-        call_fn = lambda prompt, max_tokens=8192: _call_llm_llamacpp(llm, prompt, max_tokens)
-        model_label = os.environ["LLAMACPP_MODEL_PATH"]
+    llm = load_llm(n_ctx=8192)
+    model_label = os.environ["LLAMACPP_MODEL_PATH"]
 
     num_batches = (len(turns) + BATCH_SIZE - 1) // BATCH_SIZE
 
-    log.info(f"Correcting speakers for {call_id}: {len(turns)} turns, backend={backend}, model={model_label}"
+    log.info(f"Correcting speakers for {call_id}: {len(turns)} turns, model={model_label}"
              + (f", {num_batches} batches" if num_batches > 1 else ""))
 
     all_assignments = []
@@ -260,13 +185,13 @@ def process_file(input_path: Path, output_dir: Path, backend: str = "llamacpp") 
             log.info(f"  Batch {batch_idx + 1}/{num_batches} (turns {start}-{end - 1})")
 
         for attempt in range(1 + MAX_PARSE_RETRIES):
-            response_text = call_fn(prompt)
+            response_text = generate_text(llm, prompt, max_tokens=8192)
             try:
                 batch_assignments, confidence, issues = parse_response(response_text, len(batch))
                 break
-            except (json.JSONDecodeError, ValueError) as e:
+            except ValueError as e:
                 if attempt < MAX_PARSE_RETRIES:
-                    log.warning(f"  Invalid JSON from Claude (attempt {attempt + 1}), retrying: {e}")
+                    log.warning(f"  Invalid JSON from LLM (attempt {attempt + 1}), retrying: {e}")
                 else:
                     raise
         all_assignments.extend(batch_assignments)
@@ -329,7 +254,7 @@ def process_file(input_path: Path, output_dir: Path, backend: str = "llamacpp") 
 
         validated_turns.append(new_turn)
 
-    speakers = sorted(set(t["speaker"] for t in validated_turns))
+    speakers = unique_speakers(validated_turns)
 
     # Quality gate
     overall_confidence = min(batch_confidences) if batch_confidences else -1.0
@@ -359,10 +284,8 @@ def process_file(input_path: Path, output_dir: Path, backend: str = "llamacpp") 
         output["validation_confidence"] = overall_confidence
         output["turns"] = validated_turns
 
-        output_dir.mkdir(parents=True, exist_ok=True)
         out_path = output_dir / f"{call_id}_validated.json"
-        with open(out_path, "w") as f:
-            json.dump(output, f, indent=2, ensure_ascii=False)
+        write_json(out_path, output)
         log.info(f"  Saved to {out_path}")
 
         return {
@@ -385,14 +308,12 @@ def process_file(input_path: Path, output_dir: Path, backend: str = "llamacpp") 
         "turns": validated_turns,
     }
 
-    output_dir.mkdir(parents=True, exist_ok=True)
     out_path = output_dir / f"{call_id}_validated.json"
-    with open(out_path, "w") as f:
-        json.dump(output, f, indent=2, ensure_ascii=False)
+    write_json(out_path, output)
 
+    speakers_fmt = ", ".join(f"{s}={speaker_names.get(s, '?')}" for s in speakers)
     log.info(
-        f"  Done: {changes} changes, {len(speakers)} speakers "
-        f"({', '.join(f'{s}={speaker_names.get(s, '?')}' for s in speakers)})"
+        f"  Done: {changes} changes, {len(speakers)} speakers ({speakers_fmt})"
     )
     log.info(f"  Saved to {out_path}")
 

@@ -5,7 +5,15 @@ import logging
 import warnings
 from pathlib import Path
 
-from .pipeline import find_preprocessed_wavs, process_file, process_files_batch_aws
+from voicetune.common import (
+    bootstrap,
+    resolve_stage_paths,
+    run_stage_loop,
+    unique_speakers,
+)
+from voicetune.stages.preprocess.paths import find_preprocessed_wavs
+
+from .pipeline import process_file, process_files_batch_aws
 
 warnings.filterwarnings("ignore", category=UserWarning, module="pyannote")
 
@@ -13,12 +21,7 @@ log = logging.getLogger(__name__)
 
 
 def main():
-    from dotenv import load_dotenv
-
-    from voicetune.common import setup_logging
-
-    load_dotenv()
-    setup_logging()
+    bootstrap(dotenv=True)
 
     parser = argparse.ArgumentParser(
         description="Speaker diarization + transcription (Step 2 & 3)"
@@ -28,8 +31,8 @@ def main():
         help="Base output directory (default: ./output)"
     )
     parser.add_argument(
-        "--mode", choices=["aws", "whisperx", "whispermlx", "mlx", "llamacpp"], required=True,
-        help="Diarization backend: 'aws', 'whisperx', 'whispermlx' (WhisperX on Apple Silicon via MLX), 'mlx' (Apple Silicon), or 'llamacpp' (Gemma 4 audio)"
+        "--mode", choices=["aws", "whisperx", "mlx", "llamacpp"], required=True,
+        help="Diarization backend: 'aws', 'whisperx', 'mlx' (Apple Silicon), or 'llamacpp' (Gemma 4 audio)"
     )
     parser.add_argument(
         "--input-dir", type=Path, default=None,
@@ -49,10 +52,7 @@ def main():
     )
     args = parser.parse_args()
 
-    if args.input_dir is None:
-        args.input_dir = args.run_dir / "preprocessed"
-    if args.output_dir is None:
-        args.output_dir = args.run_dir / "diarized"
+    resolve_stage_paths(args, input_dir="preprocessed", output_dir="diarized")
 
     wav_files = find_preprocessed_wavs(args.input_dir)
     if not wav_files:
@@ -62,46 +62,46 @@ def main():
     log.info(f"Found {len(wav_files)} file(s), mode: {args.mode}")
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
-    succeeded = 0
-    skipped = 0
-    failed = []
-
-    pending = []
-    for wav in wav_files:
-        if (args.output_dir / f"{wav.parent.name}_diarized.json").exists():
-            skipped += 1
-        else:
-            pending.append(wav)
+    def already_diarized(wav: Path) -> bool:
+        return (args.output_dir / f"{wav.parent.name}_diarized.json").exists()
 
     if args.mode == "aws":
+        pending = [w for w in wav_files if not already_diarized(w)]
+        skipped = len(wav_files) - len(pending)
+
+        succeeded = 0
+        failed: list[str] = []
         for audio_path, result in process_files_batch_aws(
             pending, args.output_dir, args.num_speakers, args.language
         ):
             if isinstance(result, dict):
                 n_turns = len(result["turns"])
-                speakers = set(t["speaker"] for t in result["turns"])
+                speakers = unique_speakers(result["turns"])
                 log.info(f"  {audio_path.parent.name}: {n_turns} turns, {len(speakers)} speakers")
                 succeeded += 1
             else:
                 log.error(f"Failed to process {audio_path}: {result}")
                 failed.append(str(audio_path))
-    else:
-        for wav in pending:
-            try:
-                result = process_file(wav, args.output_dir, args.mode, args.num_speakers, args.language)
-                n_turns = len(result["turns"])
-                speakers = set(t["speaker"] for t in result["turns"])
-                log.info(f"  {wav.parent.name}: {n_turns} turns, {len(speakers)} speakers")
-                succeeded += 1
-            except Exception:
-                log.exception(f"Failed to process {wav}")
-                failed.append(str(wav))
 
-    if skipped:
-        log.info(f"Skipped {skipped} already-diarized file(s)")
-    log.info(f"Summary: {succeeded} succeeded, {len(failed)} failed")
-    if failed:
-        log.info(f"Failed: {', '.join(failed)}")
+        if skipped:
+            log.info(f"Skipped {skipped} already-diarized file(s)")
+        log.info(f"Summary: {succeeded} succeeded, {len(failed)} failed")
+        if failed:
+            log.info(f"Failed: {', '.join(failed)}")
+        return
+
+    def process_one(wav: Path) -> None:
+        result = process_file(wav, args.output_dir, args.mode, args.num_speakers, args.language)
+        n_turns = len(result["turns"])
+        speakers = unique_speakers(result["turns"])
+        log.info(f"  {wav.parent.name}: {n_turns} turns, {len(speakers)} speakers")
+
+    run_stage_loop(
+        wav_files,
+        process_one,
+        done_check=already_diarized,
+        label="file",
+    )
 
 
 if __name__ == "__main__":

@@ -46,4 +46,4 @@ input/*.m4a
 [9. infer]        → generated speech via base + LoRA
 ```
 
-Per-step detail lives in `step{N}-<name>.md`.
+Per-step detail lives in `step{N}-<name>.md`. Out-of-pipeline utilities (stats, re-run) are documented in `scripts.md`.

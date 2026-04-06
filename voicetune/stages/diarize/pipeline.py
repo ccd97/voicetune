@@ -1,25 +1,17 @@
 """Diarization pipeline: backend dispatch and result persistence."""
 
-import json
 import logging
 from pathlib import Path
 
+from voicetune.common import unique_speakers, write_json
+
 log = logging.getLogger(__name__)
-
-
-def find_preprocessed_wavs(input_dir: Path) -> list[Path]:
-    """Find all full_normalized.wav files from preprocessing output."""
-    wavs = sorted(input_dir.glob("*/full_normalized.wav"))
-    if not wavs:
-        wavs = sorted(input_dir.glob("*.wav"))
-    return wavs
 
 
 def save_result(result: dict, output_dir: Path) -> Path:
     """Write diarization result JSON and return the output path."""
     out_path = output_dir / f"{result['call_id']}_diarized.json"
-    with open(out_path, "w") as f:
-        json.dump(result, f, indent=2)
+    write_json(out_path, result, ensure_ascii=True)
     log.info(f"Saved {len(result['turns'])} turns to {out_path}")
     return out_path
 
@@ -27,16 +19,14 @@ def save_result(result: dict, output_dir: Path) -> Path:
 def process_file(audio_path: Path, output_dir: Path, mode: str,
                  num_speakers: int | None = None, language: str | None = None) -> dict:
     if mode == "whisperx":
-        from .backends.whisperx_backend import diarize
-    elif mode == "whispermlx":
-        from .backends.whispermlx_backend import diarize
+        from .backends.whisperx import diarize
     elif mode == "llamacpp":
-        from .backends.llamacpp_backend import diarize
+        from .backends.llamacpp import diarize
     else:
-        from .backends.mlx_backend import diarize
+        from .backends.mlx import diarize
 
     result = diarize(audio_path, num_speakers, language)
-    result["num_speakers"] = len(set(t["speaker"] for t in result["turns"]))
+    result["num_speakers"] = len(unique_speakers(result["turns"]))
     save_result(result, output_dir)
     return result
 
@@ -51,7 +41,7 @@ def process_files_batch_aws(audio_paths: list[Path], output_dir: Path,
     processed = []
     for audio_path, result in batch_results:
         if isinstance(result, dict):
-            result["num_speakers"] = len(set(t["speaker"] for t in result["turns"]))
+            result["num_speakers"] = len(unique_speakers(result["turns"]))
             save_result(result, output_dir)
         processed.append((audio_path, result))
     return processed

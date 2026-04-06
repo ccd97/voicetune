@@ -4,18 +4,15 @@ import argparse
 import logging
 from pathlib import Path
 
+from voicetune.common import bootstrap, resolve_stage_paths
+
 from .pipeline import prepare_dataset, run_finetune
 
 log = logging.getLogger(__name__)
 
 
 def main():
-    from dotenv import load_dotenv
-
-    from voicetune.common import setup_logging
-
-    load_dotenv()
-    setup_logging()
+    bootstrap(dotenv=True)
 
     parser = argparse.ArgumentParser(
         description="Prepare dataset and fine-tune VoxCPM2 via GCP A100 VM"
@@ -64,14 +61,13 @@ def main():
     )
     args = parser.parse_args()
 
-    if args.labeled_dir is None:
-        args.labeled_dir = args.run_dir / "labeled"
-    if args.filtered_dir is None:
-        args.filtered_dir = args.run_dir / "filtered"
-    if args.data_dir is None:
-        args.data_dir = args.run_dir / "voxcpm" / "data"
-    if args.output_dir is None:
-        args.output_dir = args.run_dir / "finetune"
+    resolve_stage_paths(
+        args,
+        labeled_dir="labeled",
+        filtered_dir="filtered",
+        data_dir="voxcpm/data",
+        output_dir="finetune",
+    )
 
     keep_languages: set[str] | None = None
     if args.keep_languages:

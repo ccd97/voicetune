@@ -4,18 +4,19 @@ import argparse
 import logging
 from pathlib import Path
 
+from voicetune.common import (
+    bootstrap,
+    resolve_stage_paths,
+    run_stage_loop,
+)
+
 from .pipeline import process_file
 
 log = logging.getLogger(__name__)
 
 
 def main():
-    from dotenv import load_dotenv
-
-    from voicetune.common import setup_logging
-
-    load_dotenv()
-    setup_logging()
+    bootstrap(dotenv=True)
 
     parser = argparse.ArgumentParser(
         description="Scrub sensitive data from diarized transcripts using a local LLM"
@@ -34,10 +35,7 @@ def main():
     )
     args = parser.parse_args()
 
-    if args.input_dir is None:
-        args.input_dir = args.run_dir / "diarized"
-    if args.output_dir is None:
-        args.output_dir = args.run_dir / "scrubbed"
+    resolve_stage_paths(args, input_dir="diarized", output_dir="scrubbed")
 
     if not args.input_dir.is_dir():
         log.error(f"Input directory does not exist: {args.input_dir}")
@@ -51,26 +49,13 @@ def main():
     log.info(f"Found {len(json_files)} file(s)")
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
-    succeeded = 0
-    skipped = 0
-    failed = []
-
-    for json_file in json_files:
-        if (args.output_dir / json_file.name).exists():
-            skipped += 1
-            continue
-        try:
-            process_file(json_file, args.output_dir)
-            succeeded += 1
-        except Exception:
-            log.exception(f"Failed to process {json_file.name}")
-            failed.append(json_file.name)
-
-    if skipped:
-        log.info(f"Skipped {skipped} already-scrubbed file(s)")
-    log.info(f"Summary: {succeeded} succeeded, {len(failed)} failed")
-    if failed:
-        log.info(f"Failed: {', '.join(failed)}")
+    run_stage_loop(
+        json_files,
+        lambda p: process_file(p, args.output_dir),
+        done_check=lambda p: (args.output_dir / p.name).exists(),
+        label="file",
+        name_fn=lambda p: p.name,
+    )
 
 
 if __name__ == "__main__":

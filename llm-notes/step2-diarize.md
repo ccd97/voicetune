@@ -4,18 +4,18 @@
 Identify who spoke when and transcribe each segment. Combines steps 2 and 3 from the initial plan (diarization + transcription) into a single module.
 
 ## Module
-`voicetune/diarize/` — run via `python -m voicetune.diarize --mode {aws|whisperx|whispermlx|mlx|llamacpp}`
+`voicetune/diarize/` — run via `python -m voicetune.diarize --mode {aws|whisperx|mlx|llamacpp}`
 
 ## CLI Args
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--mode` | (required) | Backend: `aws`, `whisperx`, `whispermlx`, `mlx`, or `llamacpp` |
+| `--mode` | (required) | Backend: `aws`, `whisperx`, `mlx`, or `llamacpp` |
 | `--input-dir` | `./output/preprocessed` | Preprocessed WAV directory |
 | `--output-dir` | `./output/diarized` | Where to write diarized JSON |
 | `--num-speakers` | auto-detect | Expected speaker count |
 | `--language` | auto-detect | Force language code (e.g. `en-US`, `hi-IN`) |
 
-## Five Backends
+## Four Backends
 
 ### AWS Transcribe (`aws.py`)
 - **Batch mode:** all files are uploaded and submitted as concurrent TranscriptionJobs up front, then polled together in a single loop (15s intervals). Results are collected and S3 cleaned up as each job finishes. Per-file failures don't block the rest.
@@ -25,21 +25,15 @@ Identify who spoke when and transcribe each segment. Combines steps 2 and 3 from
 - Parses word-level speaker map and groups into turns
 - **Requires:** `AWS_S3_BUCKET`, `AWS_REGION` env vars, boto3
 
-### WhisperX (`whisperx_backend.py`)
+### WhisperX (`whisperx.py`)
 - Local GPU (CUDA) or CPU transcription with Whisper large-v3
+- On Apple Silicon (MPS available), transcription is automatically swapped to `mlx-whisper` (`mlx-community/whisper-large-v3-turbo`); alignment and diarization still run through `whisperx` on CPU
 - Aligns word timestamps with `whisperx.align()`
 - Speaker diarization via pyannote through WhisperX's `DiarizationPipeline`
 - Assigns word-level speaker labels, then merges into turns
-- **Requires:** `HF_TOKEN` env var, torch, whisperx, pyannote model access
+- **Requires:** `HF_TOKEN` env var, torch, whisperx, pyannote model access (plus `mlx-whisper` on Apple Silicon)
 
-### WhisperMLX (`whispermlx_backend.py`)
-- WhisperX fork that replaces the Whisper inference backend with mlx-whisper
-- Full WhisperX pipeline: MLX transcription → wav2vec2 word alignment → pyannote diarization → word-speaker assignment
-- Uses `large-v3-turbo` model via `mlx-community` mapping
-- Best of both worlds: MLX speed for transcription + WhisperX's precise alignment
-- **Requires:** `HF_TOKEN` env var, whispermlx (`pip install whispermlx`), pyannote model access
-
-### MLX (`mlx_backend.py`)
+### MLX (`mlx.py`)
 - Apple Silicon native — uses mlx-whisper (Metal GPU) for transcription
 - Uses `mlx-community/whisper-large-v3-turbo` model
 - pyannote for diarization (uses MPS backend on Apple Silicon)
@@ -47,7 +41,7 @@ Identify who spoke when and transcribe each segment. Combines steps 2 and 3 from
 - Majority vote for segment-level speaker from word speakers
 - **Requires:** `HF_TOKEN` env var, mlx-whisper, pyannote.audio, torch
 
-### llama.cpp (`llamacpp_backend.py`)
+### llama.cpp (`llamacpp.py`)
 - Single-model transcription + diarization using Gemma 4's audio conformer encoder via llama.cpp
 - No separate diarization step — the model identifies speakers natively from the audio
 - Audio WAV is base64-encoded and passed through the mtmd multimodal API

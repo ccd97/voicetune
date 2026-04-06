@@ -12,7 +12,7 @@ Audio processing pipeline for voice fine-tuning. Run the full pipeline via `pyth
 - **No redundant comments.** If the code says `write_wav(path, audio)`, do not add `# Write the WAV file`. Only comment when the *why* is non-obvious.
 - **No numbered step comments** like `# 1. Do X`, `# 2. Do Y` unless the ordering is surprising or non-trivial.
 - **Prefer early returns** over deep nesting.
-- **Shared utilities live in `voicetune/common.py`.** Before adding a helper to a module, check if it already exists there or belongs there.
+- **Shared utilities live in `voicetune/common/`.** Before adding a helper to a module, check if it already exists in the appropriate submodule (`audio`, `cli`, `dialogue`, `gemma_llm`, `json_io`) or belongs there. Stage-specific path helpers live in `voicetune/stages/<stage>/paths.py`.
 - **No module-level side effects** in library code. `load_dotenv()`, `setup_logging()`, etc. belong inside `main()` or CLI entry points only.
 - **Remove unused imports.** Do not leave imports "for later."
 - **Keep behavior unchanged** unless fixing a clear bug. Prefer minimal, focused edits over broad rewrites.

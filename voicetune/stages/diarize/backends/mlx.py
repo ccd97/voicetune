@@ -1,22 +1,11 @@
-"""MLX Whisper + pyannote diarization backend for Apple Silicon.
-
-Uses mlx-whisper for GPU-accelerated transcription on Apple Silicon,
-and pyannote for speaker diarization. Much faster than WhisperX on M-series Macs
-since mlx-whisper runs natively on the Metal GPU.
-
-Requires: pip install mlx-whisper pyannote.audio
-Requires: HF_TOKEN env var with pyannote model access.
-"""
+"""MLX Whisper + pyannote diarization backend for Apple Silicon. Needs `HF_TOKEN`."""
 
 import logging
 import os
 from pathlib import Path
 
-import numpy as np
-
-from voicetune.common import merge_segments_to_turns
-
-from voicetune.common import get_call_id
+from voicetune.common import merge_segments_to_turns, read_audio_channels_first
+from voicetune.stages.preprocess.paths import get_call_id
 
 log = logging.getLogger(__name__)
 
@@ -45,9 +34,6 @@ def diarize(audio_path: Path, num_speakers: int | None = None, language: str | N
     detected_lang = result.get("language", "en")
     log.info(f"Language: {detected_lang}, {len(result['segments'])} segments")
 
-    # Pass waveform directly to avoid torchcodec issues with pyannote
-    import soundfile as sf
-
     log.info(f"Running speaker diarization (speakers: {'auto-detect' if num_speakers is None else num_speakers})...")
     diarize_pipeline = Pipeline.from_pretrained(
         "pyannote/speaker-diarization-community-1",
@@ -60,11 +46,8 @@ def diarize(audio_path: Path, num_speakers: int | None = None, language: str | N
     else:
         log.info("Using CPU for diarization")
 
-    audio_data, sample_rate = sf.read(str(audio_path), dtype="float32")
-    if audio_data.ndim == 1:
-        audio_data = audio_data[np.newaxis, :]  # (1, time)
-    else:
-        audio_data = audio_data.T  # (channels, time)
+    # Pass waveform directly to avoid torchcodec issues with pyannote
+    audio_data, sample_rate = read_audio_channels_first(audio_path)
     waveform = torch.from_numpy(audio_data)
 
     diarize_kwargs = {}

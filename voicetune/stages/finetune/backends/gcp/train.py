@@ -22,7 +22,6 @@ from pathlib import Path
 import yaml
 from google.cloud import storage
 
-logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(message)s", datefmt="%H:%M:%S")
 log = logging.getLogger(__name__)
 
 MODEL_REPO = "openbmb/VoxCPM2"
@@ -323,6 +322,12 @@ def upload_results(bucket: storage.Bucket, vox_dir: Path) -> None:
 
 
 def main():
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--bucket", required=True)
     parser.add_argument("--max-steps", type=int, default=500)

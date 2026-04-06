@@ -5,15 +5,15 @@ Uses pyannote WeSpeakerResNet34 (bundled inside
 match against a reference voiceprint to label speakers as 'me' vs 'other'.
 """
 
-import json
 import logging
 import os
 import warnings
 from pathlib import Path
 
 import numpy as np
-import soundfile as sf
 import torch
+
+from voicetune.common import read_json, read_mono_wav, write_json
 
 log = logging.getLogger(__name__)
 
@@ -72,9 +72,7 @@ def extract_embedding(audio_paths: list[Path]) -> np.ndarray:
     embeddings = []
 
     for path in audio_paths:
-        audio, sr = sf.read(str(path), dtype="float32")
-        if audio.ndim > 1:
-            audio = audio.mean(axis=1)
+        audio, sr = read_mono_wav(path)
         if sr != EMBEDDING_SAMPLE_RATE:
             raise ValueError(f"{path}: expected {EMBEDDING_SAMPLE_RATE} Hz, got {sr} Hz")
         if len(audio) < int(MIN_EMBED_SECONDS * sr):
@@ -121,10 +119,7 @@ def _load_voiceprint(path: Path) -> np.ndarray:
 def enroll(segmented_dir: Path, call_id: str, my_speaker_label: str, output_path: Path) -> None:
     """Create a voiceprint file from a known call where the user identifies themselves."""
     call_dir = segmented_dir / call_id
-    dialogue_path = call_dir / "dialogue.json"
-
-    with open(dialogue_path) as f:
-        dialogue = json.load(f)
+    dialogue = read_json(call_dir / "dialogue.json")
 
     my_turns = [t for t in dialogue["turns"] if t["speaker"] == my_speaker_label]
     if not my_turns:
@@ -151,10 +146,7 @@ MIN_USABLE_TURNS = 3
 def analyze_speakers(segmented_dir: Path, call_id: str, voiceprint_path: Path) -> dict:
     """Compute speaker similarities and quality flags without writing anything."""
     call_dir = segmented_dir / call_id
-    dialogue_path = call_dir / "dialogue.json"
-
-    with open(dialogue_path) as f:
-        dialogue = json.load(f)
+    dialogue = read_json(call_dir / "dialogue.json")
 
     ref_embedding = _load_voiceprint(voiceprint_path)
     ref_norm = float(np.linalg.norm(ref_embedding)) or 1.0
@@ -248,10 +240,7 @@ def apply_labels(analysis: dict, me_speaker: str, output_dir: Path) -> None:
     dialogue["label_quality_flags"] = analysis["quality_flags"]
     dialogue["speaker_embedding_model"] = f"{EMBEDDING_MODEL}#{EMBEDDING_SUBFOLDER}"
 
-    call_dir = output_dir / call_id
-    call_dir.mkdir(parents=True, exist_ok=True)
-    dialogue_path = call_dir / "dialogue.json"
-    with open(dialogue_path, "w") as f:
-        json.dump(dialogue, f, indent=2, ensure_ascii=False)
+    dialogue_path = output_dir / call_id / "dialogue.json"
+    write_json(dialogue_path, dialogue)
 
     log.info(f"  Wrote {dialogue_path}")

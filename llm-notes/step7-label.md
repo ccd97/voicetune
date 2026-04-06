@@ -77,7 +77,7 @@ Flags are informational only. The speaker with the highest similarity is always 
 
 Pipeline is split into two functions: `analyze_speakers()` (compute similarities + flags, no side effects) and `apply_labels()` (writes labeled dialogue.json to output dir).
 
-Thresholds are module-level constants (`MIN_SIMILARITY`, `MIN_MARGIN`, `MIN_USABLE_TURNS`). These defaults were raised from 0.60/0.10 when we migrated from resemblyzer to pyannote — WeSpeaker cosines concentrate higher and separate better.
+Thresholds are module-level constants (`MIN_SIMILARITY`, `MIN_MARGIN`, `MIN_USABLE_TURNS`). Calibrated for WeSpeaker cosines, which concentrate higher and separate better than older encoders would have; adjust if the embedding model ever changes.
 
 ## Key Implementation Details
 - Uses `pyannote.audio.Model.from_pretrained(EMBEDDING_MODEL, subfolder="embedding")` (singleton, loaded once)
@@ -91,9 +91,8 @@ Thresholds are module-level constants (`MIN_SIMILARITY`, `MIN_MARGIN`, `MIN_USAB
 - The `run.py` orchestrator prompts the user interactively to select their speaker during first enrollment (shows sample text and audio paths)
 
 ## Migration Notes
-- Re-enroll once after upgrading: `python -m voicetune.stages.label enroll --call-id <ref> --speaker <spk>`. The new voiceprint lands at `output/voiceprint.npz`; old `.npy` files are ignored.
-- `output/labeled/` from the previous resemblyzer run is **not** auto-invalidated — delete it (or pass `--output-dir` elsewhere) if you want every call re-labeled with the new encoder. New per-call outputs carry `speaker_embedding_model` so future code can detect staleness.
-- The evaluate-finetune-checkpoints skill still scores via resemblyzer off `output/voiceprint.npy`; that path is independent of this stage.
+- The current stage uses pyannote WeSpeaker embeddings and writes `output/voiceprint.npz` with a `speaker_embedding_model` stamp so future encoder swaps are detectable.
+- If you ever change the embedding model, re-enroll (`python -m voicetune.stages.label enroll --call-id <ref> --speaker <spk>`) and delete any stale `output/labeled/` tree so every call gets re-labeled — `_load_voiceprint()` refuses mismatched model names but won't proactively invalidate downstream outputs.
 
 ## Dependencies
 `pyannote.audio>=4.0` (local extra), `soundfile`, `numpy`, `torch`. Requires `HF_TOKEN` with pyannote model access.

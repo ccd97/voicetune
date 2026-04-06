@@ -4,15 +4,19 @@ import argparse
 import logging
 from pathlib import Path
 
+from voicetune.common import (
+    bootstrap,
+    resolve_stage_paths,
+    run_stage_loop,
+)
+
 from .pipeline import process_file
 
 log = logging.getLogger(__name__)
 
 
 def main():
-    from voicetune.common import setup_logging
-
-    setup_logging()
+    bootstrap()
 
     parser = argparse.ArgumentParser(
         description="Turn segmentation: merge same-speaker turns, cut per-turn audio"
@@ -39,12 +43,12 @@ def main():
     )
     args = parser.parse_args()
 
-    if args.input_dir is None:
-        args.input_dir = args.run_dir / "validated"
-    if args.audio_dir is None:
-        args.audio_dir = args.run_dir / "preprocessed"
-    if args.output_dir is None:
-        args.output_dir = args.run_dir / "segmented"
+    resolve_stage_paths(
+        args,
+        input_dir="validated",
+        audio_dir="preprocessed",
+        output_dir="segmented",
+    )
 
     if not args.input_dir.is_dir():
         log.error(f"Input directory does not exist: {args.input_dir}")
@@ -58,27 +62,17 @@ def main():
     log.info(f"Found {len(json_files)} file(s)")
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
-    succeeded = 0
-    skipped_done = 0
-    failed = []
+    def already_segmented(path: Path) -> bool:
+        call_id = path.name.replace("_validated.json", "")
+        return (args.output_dir / call_id / "dialogue.json").exists()
 
-    for json_file in json_files:
-        call_id = json_file.name.replace("_validated.json", "")
-        if (args.output_dir / call_id / "dialogue.json").exists():
-            skipped_done += 1
-            continue
-        try:
-            process_file(json_file, args.audio_dir, args.output_dir, args.merge_gap)
-            succeeded += 1
-        except Exception:
-            log.exception(f"Failed to process {json_file.name}")
-            failed.append(json_file.name)
-
-    if skipped_done:
-        log.info(f"Skipped {skipped_done} already-segmented file(s)")
-    log.info(f"Summary: {succeeded} succeeded, {len(failed)} failed")
-    if failed:
-        log.info(f"Failed: {', '.join(failed)}")
+    run_stage_loop(
+        json_files,
+        lambda p: process_file(p, args.audio_dir, args.output_dir, args.merge_gap),
+        done_check=already_segmented,
+        label="file",
+        name_fn=lambda p: p.name,
+    )
 
 
 if __name__ == "__main__":

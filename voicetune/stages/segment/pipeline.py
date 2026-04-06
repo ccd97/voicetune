@@ -3,14 +3,19 @@
 Does not drop turns — validation metadata is propagated to the filter step.
 """
 
-import json
 import logging
 from pathlib import Path
 
-import numpy as np
-import soundfile as sf
-
-from voicetune.common import write_wav
+from voicetune.common import (
+    cut_turn_audio,
+    read_json,
+    read_mono_wav,
+    turns_total_duration,
+    unique_speakers,
+    write_json,
+    write_wav,
+)
+from voicetune.stages.preprocess.paths import find_audio_for_call
 
 log = logging.getLogger(__name__)
 
@@ -36,26 +41,6 @@ def merge_turns(turns: list[dict], max_gap: float) -> list[dict]:
     return merged
 
 
-def cut_turn_audio(audio: np.ndarray, sr: int, start: float, end: float) -> np.ndarray:
-    """Extract a segment of audio between start and end times."""
-    start_sample = max(0, int(start * sr))
-    end_sample = min(len(audio), int(end * sr))
-    return audio[start_sample:end_sample]
-
-
-def find_audio_for_call(call_id: str, audio_dir: Path) -> Path | None:
-    """Locate the preprocessed WAV for a given call ID."""
-    candidate = audio_dir / call_id / "full_normalized.wav"
-    if candidate.exists():
-        return candidate
-
-    candidate = audio_dir / f"{call_id}.wav"
-    if candidate.exists():
-        return candidate
-
-    return None
-
-
 def process_file(
     validated_path: Path,
     audio_dir: Path,
@@ -63,8 +48,7 @@ def process_file(
     merge_gap: float,
 ) -> dict:
     """Cut per-turn audio from a validated JSON. Does not drop turns."""
-    with open(validated_path) as f:
-        data = json.load(f)
+    data = read_json(validated_path)
 
     call_id = data["call_id"]
     turns = data.get("turns", [])
@@ -79,7 +63,7 @@ def process_file(
     if not audio_path:
         raise FileNotFoundError(f"No preprocessed audio found for {call_id} in {audio_dir}")
 
-    audio, sr = sf.read(str(audio_path), dtype="float32")
+    audio, sr = read_mono_wav(audio_path)
     log.info(f"  Audio: {audio_path.name} ({len(audio)/sr:.1f}s, {sr}Hz)")
 
     call_output_dir = output_dir / call_id
@@ -106,15 +90,13 @@ def process_file(
             out_turn["issues"] = list(turn["issues"])
         output_turns.append(out_turn)
 
-    speakers = sorted({t["speaker"] for t in output_turns})
+    speakers = unique_speakers(output_turns)
     result = {
         "call_id": call_id,
         "language": data.get("language", "unknown"),
         "speakers": speakers,
         "num_turns": len(output_turns),
-        "total_duration": round(
-            max(t["end"] for t in output_turns) - min(t["start"] for t in output_turns), 3
-        ) if output_turns else 0,
+        "total_duration": round(turns_total_duration(output_turns), 3) if output_turns else 0,
         "turns": output_turns,
     }
     if data.get("rejected"):
@@ -124,8 +106,7 @@ def process_file(
     if "validation_confidence" in data:
         result["validation_confidence"] = data["validation_confidence"]
 
-    with open(call_output_dir / "dialogue.json", "w") as f:
-        json.dump(result, f, indent=2, ensure_ascii=False)
+    write_json(call_output_dir / "dialogue.json", result)
 
     log.info(f"  Output: {len(output_turns)} turns, {len(speakers)} speakers -> {call_output_dir.name}/")
     return result

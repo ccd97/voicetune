@@ -1,38 +1,15 @@
 """Scrub pipeline — uses llama-cpp-python to detect and discard turns containing sensitive data."""
 
-import json
 import logging
-import os
 from enum import Enum
 from pathlib import Path
 
 from voicetune import prompts
+from voicetune.common import generate_text, load_llm, read_json, write_json
 
 log = logging.getLogger(__name__)
 
 BATCH_SIZE = 20
-
-_llm = None
-
-
-def _get_llm():
-    global _llm
-    if _llm is not None:
-        return _llm
-
-    from llama_cpp import Llama
-
-    model_path = os.environ["LLAMACPP_MODEL_PATH"]
-    log.info(f"Loading llama.cpp model for scrub: {model_path}")
-
-    _llm = Llama(
-        model_path=model_path,
-        n_ctx=4096,
-        n_gpu_layers=-1,
-        n_threads=os.cpu_count() or 4,
-        verbose=False,
-    )
-    return _llm
 
 
 class SensitiveDataType(Enum):
@@ -63,12 +40,7 @@ def classify_batch(llm, turns: list[dict]) -> list[bool]:
     """Send a batch of turns to the local LLM. Returns list of bools: True = sensitive (discard)."""
     prompt = build_prompt(turns)
 
-    response = llm.create_chat_completion(
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.0,
-        max_tokens=len(turns) * 20,
-    )
-    response_text = response["choices"][0]["message"]["content"]
+    response_text = generate_text(llm, prompt, max_tokens=len(turns) * 20)
 
     flags = [False] * len(turns)
     for line in response_text.strip().split("\n"):
@@ -87,10 +59,9 @@ def classify_batch(llm, turns: list[dict]) -> list[bool]:
 
 def process_file(input_path: Path, output_dir: Path) -> dict:
     """Read a diarized JSON, classify turns via llama.cpp, discard sensitive ones, write output."""
-    llm = _get_llm()
+    llm = load_llm(n_ctx=4096)
 
-    with open(input_path) as f:
-        data = json.load(f)
+    data = read_json(input_path)
 
     call_id = data["call_id"]
     turns = data["turns"]
@@ -119,8 +90,7 @@ def process_file(input_path: Path, output_dir: Path) -> dict:
     }
 
     out_path = output_dir / input_path.name
-    with open(out_path, "w") as f:
-        json.dump(result, f, indent=2, ensure_ascii=False)
+    write_json(out_path, result)
 
     log.info(f"Saved {len(clean_turns)} turns to {out_path}")
     return result

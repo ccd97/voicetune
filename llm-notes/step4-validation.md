@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Validate and fix speaker diarization errors using an LLM's understanding of conversational context. Diarization often misattributes turns — the LLM uses dialogue flow, names, and context to fix these errors. Supports Bedrock (Claude) and llama.cpp backends.
+Validate and fix speaker diarization errors using an LLM's understanding of conversational context. Diarization often misattributes turns — the LLM uses dialogue flow, names, and context to fix these errors. Runs on a local llama.cpp model.
 
 ## Module
 
@@ -15,7 +15,6 @@ Validate and fix speaker diarization errors using an LLM's understanding of conv
 | -------------- | --------------------- | --------------------------------------- |
 | `--input-dir`  | `./output/diarized`   | Directory with diarized JSON files      |
 | `--output-dir` | `./output/validated`  | Output directory for validated files    |
-| `--backend`    | `llamacpp`            | Backend: `bedrock` or `llamacpp`        |
 
 
 ## What It Does
@@ -91,35 +90,26 @@ Non-rejected with per-turn issues (filter step will remove flagged turns):
 - Presents transcript as numbered lines: `[index] speaker (start - end): text`
 - Asks for JSON array with `{index, speaker, name, reasoning}` per turn
 - Rules: keep original labels where correct, identify speakers by name when possible, reflect actual number of participants
-- Same prompt template (`validation.j2`) used by both backends
+- Template: `validation.j2`
 - `max_tokens=8192`
-
-### Bedrock backend
-
-- Model: `CORRECTION_MODEL` env var, defaults to Claude Haiku 4.5
-- Uses httpx with 120s timeout
 
 ### llama.cpp backend
 
 - Uses llama-cpp-python with `create_chat_completion` (text-only)
-- Model cached across files via module-level `_get_llm()`
+- Model cached across files via the shared `load_llamacpp()` helper
 - `n_ctx=8192` to match the response token budget
 - `temperature=0` for deterministic output
 
 ## Environment Variables
 
 
-| Var                          | Backend   | Description                     |
-| ---------------------------- | --------- | ------------------------------- |
-| `ANTHROPIC_BEDROCK_BASE_URL` | bedrock   | Bedrock gateway URL             |
-| `ANTHROPIC_AUTH_TOKEN`       | bedrock   | Auth bearer token               |
-| `VALIDATION_MODEL`           | bedrock   | Claude model ID (optional)      |
-| `NODE_EXTRA_CA_CERTS`        | bedrock   | Custom CA certs path (optional) |
-| `LLAMACPP_MODEL_PATH`        | llamacpp  | Path to GGUF model file         |
+| Var                   | Description             |
+| --------------------- | ----------------------- |
+| `LLAMACPP_MODEL_PATH` | Path to GGUF model file |
 
 ## Dependencies
 
-`httpx`, `python-dotenv`, `llama-cpp-python` (for llamacpp backend)
+`python-dotenv`, `llama-cpp-python`
 
 ## Quality Gate
 

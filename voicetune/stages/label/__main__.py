@@ -1,9 +1,14 @@
 """CLI entry point: python -m voicetune.stages.label"""
 
 import argparse
-import json
 import logging
 from pathlib import Path
+
+from voicetune.common import (
+    bootstrap,
+    read_json,
+    resolve_stage_paths,
+)
 
 from .pipeline import analyze_speakers, apply_labels, enroll
 
@@ -11,9 +16,7 @@ log = logging.getLogger(__name__)
 
 
 def main():
-    from voicetune.common import setup_logging
-
-    setup_logging()
+    bootstrap()
 
     parser = argparse.ArgumentParser(
         description="Speaker labeling: enroll voiceprint or label calls as 'me' vs 'other'"
@@ -57,10 +60,7 @@ def main():
     )
     args = parser.parse_args()
 
-    if args.input_dir is None:
-        args.input_dir = args.run_dir / "filtered"
-    if args.voiceprint is None:
-        args.voiceprint = args.run_dir / "voiceprint.npz"
+    resolve_stage_paths(args, input_dir="filtered", voiceprint="voiceprint.npz")
 
     if args.command == "enroll":
         enroll(args.input_dir, args.call_id, args.speaker, args.voiceprint)
@@ -75,10 +75,7 @@ def main():
         if args.call_id:
             call_ids = [args.call_id]
         else:
-            call_ids = sorted(
-                d.name for d in args.input_dir.iterdir()
-                if d.is_dir() and (d / "dialogue.json").exists()
-            )
+            call_ids = sorted(p.parent.name for p in args.input_dir.glob("*/dialogue.json"))
 
         if not call_ids:
             log.warning(f"No filtered calls found in {args.input_dir}")
@@ -93,10 +90,9 @@ def main():
             if (output_dir / call_id / "dialogue.json").exists():
                 skipped_done += 1
                 continue
-            with open(args.input_dir / call_id / "dialogue.json") as f:
-                if json.load(f).get("rejected"):
-                    skipped_rejected += 1
-                    continue
+            if read_json(args.input_dir / call_id / "dialogue.json").get("rejected"):
+                skipped_rejected += 1
+                continue
             log.info(f"Processing {call_id}")
             analysis = analyze_speakers(args.input_dir, call_id, args.voiceprint)
 

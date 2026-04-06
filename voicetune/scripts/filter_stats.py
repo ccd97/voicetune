@@ -1,24 +1,23 @@
 """Summarize pipeline outputs across all stages."""
 
 import argparse
-import json
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from statistics import mean
 
+from voicetune.common import (
+    audio_duration,
+    read_json,
+    read_jsonl,
+    turn_duration,
+    turn_text_chars,
+    turns_total_duration,
+)
+
 
 def _normalize_lang(lang: str) -> str:
     return lang.split("-")[0].lower()
-
-
-def _load_json(path: Path) -> dict:
-    with open(path) as f:
-        return json.load(f)
-
-
-def _turn_text_chars(turns: list) -> int:
-    return sum(len(turn.get("text", "")) for turn in turns)
 
 
 def _fmt_num(value: float | int | None, digits: int = 1) -> str:
@@ -123,15 +122,8 @@ def _summarize_preprocess(root: Path) -> StageSummary:
     if not wavs:
         return summary
 
-    try:
-        import soundfile as sf
-    except ImportError:
-        summary.extra.append(("note", "soundfile not installed, skipping audio stats"))
-        return summary
-
     for wav in wavs:
-        info = sf.info(str(wav))
-        summary.total_duration += info.frames / info.samplerate
+        summary.total_duration += audio_duration(wav)
         summary.total_audio_bytes += wav.stat().st_size
     return summary
 
@@ -144,17 +136,17 @@ def _summarize_json_stage(root: Path, pattern: str, stage_name: str, audio_root:
     lang_durations: dict = {}
 
     for path in files:
-        data = _load_json(path)
+        data = read_json(path)
         turns = data.get("turns", [])
         summary.total_turns += len(turns)
-        summary.total_turn_chars += _turn_text_chars(turns)
+        summary.total_turn_chars += turn_text_chars(turns)
         file_dur = 0.0
         if "total_duration" in data and isinstance(data["total_duration"], (int, float)):
             file_dur = float(data["total_duration"])
         elif "duration" in data and isinstance(data["duration"], (int, float)):
             file_dur = float(data["duration"])
         elif turns:
-            file_dur = max(t.get("end", 0) for t in turns) - min(t.get("start", 0) for t in turns)
+            file_dur = turns_total_duration(turns)
         if file_dur:
             durations.append(file_dur)
         lang = data.get("language")
@@ -187,10 +179,10 @@ def _summarize_filter(root: Path) -> StageSummary:
     lang_durations: dict = {}
 
     for path in dialogue_files:
-        data = _load_json(path)
+        data = read_json(path)
         turns = data.get("turns", [])
         summary.total_turns += len(turns)
-        summary.total_turn_chars += _turn_text_chars(turns)
+        summary.total_turn_chars += turn_text_chars(turns)
 
         rejected = bool(data.get("rejected"))
         if rejected:
@@ -204,7 +196,7 @@ def _summarize_filter(root: Path) -> StageSummary:
         if "total_duration" in data and isinstance(data["total_duration"], (int, float)):
             file_dur = float(data["total_duration"])
         elif turns:
-            file_dur = max(t.get("end", 0) for t in turns) - min(t.get("start", 0) for t in turns)
+            file_dur = turns_total_duration(turns)
         if file_dur:
             durations.append(file_dur)
 
@@ -251,10 +243,10 @@ def _summarize_segment(root: Path) -> StageSummary:
     lang_durations: dict = {}
 
     for path in dialogue_files:
-        data = _load_json(path)
+        data = read_json(path)
         turns = data.get("turns", [])
         summary.total_turns += len(turns)
-        summary.total_turn_chars += _turn_text_chars(turns)
+        summary.total_turn_chars += turn_text_chars(turns)
         file_dur = 0.0
         if "total_duration" in data and isinstance(data["total_duration"], (int, float)):
             file_dur = float(data["total_duration"])
@@ -277,9 +269,6 @@ def _summarize_segment(root: Path) -> StageSummary:
 
 
 def _summarize_label(labeled_root: Path, audio_root: Path) -> StageSummary:
-    """`audio_root` is the dir holding the per-call `turns/*.wav` that label references
-    (the filter output in the current pipeline).
-    """
     dialogue_files = sorted(labeled_root.glob("*/dialogue.json"))
     summary = StageSummary("label", files=len(dialogue_files))
     me_turns = 0
@@ -290,11 +279,11 @@ def _summarize_label(labeled_root: Path, audio_root: Path) -> StageSummary:
     wav_bytes = []
 
     for path in dialogue_files:
-        data = _load_json(path)
+        data = read_json(path)
         call_id = data.get("call_id", path.parent.name)
         turns = data.get("turns", [])
         summary.total_turns += len(turns)
-        summary.total_turn_chars += _turn_text_chars(turns)
+        summary.total_turn_chars += turn_text_chars(turns)
 
         file_dur = 0.0
         if "total_duration" in data and isinstance(data["total_duration"], (int, float)):
@@ -304,7 +293,7 @@ def _summarize_label(labeled_root: Path, audio_root: Path) -> StageSummary:
 
         call_me_dur = 0.0
         for turn in turns:
-            dur = max(0.0, float(turn.get("duration", turn.get("end", 0) - turn.get("start", 0))))
+            dur = turn_duration(turn)
             if turn.get("speaker_label") == "me":
                 me_turns += 1
                 call_me_dur += dur
@@ -337,25 +326,14 @@ def _summarize_label(labeled_root: Path, audio_root: Path) -> StageSummary:
     return summary
 
 
-def _read_jsonl(path: Path) -> list[dict]:
-    entries: list[dict] = []
-    with path.open() as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            entries.append(json.loads(line))
-    return entries
-
-
 def _summarize_finetune(data_root: Path) -> StageSummary:
     me_dir = data_root / "me"
     wavs = sorted(me_dir.glob("*.wav")) if me_dir.is_dir() else []
 
     train_manifest = data_root / "train.jsonl"
     val_manifest = data_root / "val.jsonl"
-    train_entries = _read_jsonl(train_manifest) if train_manifest.exists() else []
-    val_entries = _read_jsonl(val_manifest) if val_manifest.exists() else []
+    train_entries = read_jsonl(train_manifest) if train_manifest.exists() else []
+    val_entries = read_jsonl(val_manifest) if val_manifest.exists() else []
     manifest_entries = train_entries + val_entries
 
     if manifest_entries:
@@ -372,13 +350,7 @@ def _summarize_finetune(data_root: Path) -> StageSummary:
             float(e["duration"]) for e in manifest_entries if isinstance(e.get("duration"), (int, float))
         )
         if summary.total_duration == 0.0 and manifest_paths:
-            import soundfile as sf
-            dur = 0.0
-            for p in manifest_paths:
-                if p.exists():
-                    info = sf.info(str(p))
-                    dur += info.frames / info.samplerate
-            summary.total_duration = dur
+            summary.total_duration = sum(audio_duration(p) for p in manifest_paths if p.exists())
     else:
         summary = StageSummary(
             "finetune",
@@ -387,16 +359,11 @@ def _summarize_finetune(data_root: Path) -> StageSummary:
         )
         summary.total_audio_bytes = sum(p.stat().st_size for p in wavs)
         if wavs:
-            import soundfile as sf
-            dur = 0.0
-            for wav in wavs:
-                info = sf.info(str(wav))
-                dur += info.frames / info.samplerate
-            summary.total_duration = dur
+            summary.total_duration = sum(audio_duration(wav) for wav in wavs)
 
     summary_path = data_root / "export_summary.json"
     if summary_path.exists():
-        export = _load_json(summary_path)
+        export = read_json(summary_path)
         calls = export.get("calls", [])
         summary.extra.append(("calls", f"{len(calls):,}"))
         summary.extra.append(("skipped other", f"{sum(c.get('skipped_other', 0) for c in calls):,}"))
