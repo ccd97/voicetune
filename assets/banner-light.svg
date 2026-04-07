@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 360" role="img" aria-label="voicetune">
+  <title>voicetune</title>
+
+  <rect width="1200" height="360" fill="#FBF4E9"/>
+
+  <defs>
+    <clipPath id="wordClip">
+      <text x="600" y="235" text-anchor="middle"
+            font-family="'Helvetica Neue', Helvetica, Arial, sans-serif"
+            font-size="200" font-weight="900" letter-spacing="-3">voicetune</text>
+    </clipPath>
+  </defs>
+
+  <text x="600" y="235" text-anchor="middle"
+        font-family="'Helvetica Neue', Helvetica, Arial, sans-serif"
+        font-size="200" font-weight="900" letter-spacing="-3"
+        fill="#2E2620">voicetune</text>
+
+  <g clip-path="url(#wordClip)">
+    <path stroke="#F07A45" stroke-width="9" stroke-linecap="round" fill="none"
+          d="M 177,155 v 50 M 195,145 v 70 M 213,135 v 90 M 231,127.5 v 105 M 249,122.5 v 115 M 267,117.5 v 125 M 285,121 v 118 M 303,130 v 100 M 321,140 v 80 M 339,147.5 v 65 M 357,142.5 v 75 M 375,132.5 v 95 M 393,122.5 v 115 M 411,117.5 v 125 M 429,116 v 128 M 447,120 v 120 M 465,130 v 100 M 483,140 v 80 M 501,150 v 60 M 519,140 v 80 M 537,127.5 v 105 M 555,120 v 120 M 573,116 v 128 M 591,119 v 122 M 609,126 v 108 M 627,136 v 88 M 645,145 v 70 M 663,137.5 v 85 M 681,127.5 v 105 M 699,120 v 120 M 717,116 v 128 M 735,117.5 v 125 M 753,125 v 110 M 771,135 v 90 M 789,145 v 70 M 807,137.5 v 85 M 825,126 v 108 M 843,119 v 122 M 861,116 v 128 M 879,120 v 120 M 897,130 v 100 M 915,140 v 80 M 933,150 v 60 M 951,142.5 v 75 M 969,132.5 v 95 M 987,125 v 110 M 1005,131 v 98 M 1023,141 v 78"/>
+  </g>
+</svg>

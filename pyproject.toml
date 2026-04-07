@@ -35,10 +35,13 @@ gcp = [
     "google-cloud-storage>=2.19",
     "google-cloud-compute>=1.22",
 ]
+aws = [
+    "boto3>=1.35",
+]
 infer = [
     "voxcpm>=2.0",
     "gradio>=4.0",
 ]
 all = [
-    "voicetune[local,gcp,infer]",
+    "voicetune[local,gcp,aws,infer]",
 ]
