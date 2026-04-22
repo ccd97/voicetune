@@ -124,11 +124,11 @@ Simple nine-stage linear pipeline. Each reads the previous stage's output direct
 
 Unfortunately, I won't be able to provide my actual voice to compare with the samples below due to security concerns. The audio below is generated from `step 300` of the checkpoint. The later checkpoints are way too accurate and for the same reason, I can't share them. The samples below are also generated using `cfg = 2.0` (i.e. letting the model generate more naturally and smoothly; CFG of 1.2-1.8 generally sounds more realistic).
 
-| Language  | Listen |
+| Language  | Sample |
 | --------- | ------ |
-| English  | <audio controls src="assets/samples/sample-en.wav"></audio>        |
-| Hindi    |  <audio controls src="assets/samples/sample-hi.wav"></audio>        |
-| Marathi  |  <audio controls src="assets/samples/sample-mr.wav"></audio>        |
+| English | [🔊 View Sample](assets/samples/Sample-en.wav) |
+| Hindi | [🔊 View Sample](assets/samples/Sample-hi.wav) |
+| Marathi | [🔊 View Sample](assets/samples/Sample-mr.wav) |
 
 
 ## Future Plans
