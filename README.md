@@ -18,7 +18,7 @@ I also find training and fine-tuning LLMs pretty fun and challenging. How can di
 
 So, if you are also interested in fine-tuning LLMs for your own audio data, this pipeline might be for you.
 
-> **Notes:**   
+> [!WARNING]  
 > (a) This project is not production ready and was created for learning and experimentation purposes.   
 > (b) Please do not use this for any illegal or unethical purposes.
 
@@ -124,11 +124,11 @@ Simple nine-stage linear pipeline. Each reads the previous stage's output direct
 
 Unfortunately, I won't be able to provide my actual voice to compare with the samples below due to security concerns. The audio below is generated from `step 300` of the checkpoint. The later checkpoints are way too accurate and for the same reason, I can't share them. The samples below are also generated using `cfg = 2.0` (i.e. letting the model generate more naturally and smoothly; CFG of 1.2-1.8 generally sounds more realistic).
 
-| Language  | Sample |
-| --------- | ------ |
-| English | [🔊 View Sample](assets/samples/Sample-en.wav) |
-| Hindi | [🔊 View Sample](assets/samples/Sample-hi.wav) |
-| Marathi | [🔊 View Sample](assets/samples/Sample-mr.wav) |
+| Language  | Download | Preview |
+| --------- | ------ | ------- |
+| English | [Sample-en.wav](https://github.com/ccd97/voicetune/raw/refs/heads/mainline/assets/samples/Sample-en.wav) | <details><summary>Expand</summary><video src="https://github.com/user-attachments/assets/e7834067-82b0-499b-8760-ba6365f0793e" controls></video></details> |
+| Hindi | [Sample-hi.wav](https://github.com/ccd97/voicetune/raw/refs/heads/mainline/assets/samples/Sample-hi.wav) | <details><summary>Expand</summary><video src="https://github.com/user-attachments/assets/d426f35d-f671-4be1-a261-ea39b57f1fb1" controls></video></details> |
+| Marathi | [Sample-mr.wav](https://github.com/ccd97/voicetune/raw/refs/heads/mainline/assets/samples/Sample-mr.wav) | <details><summary>Expand</summary><video src="https://github.com/user-attachments/assets/16b4256d-4e65-455c-8857-9a375331a942" controls></video></details> |
 
 
 ## Future Plans
@@ -142,7 +142,8 @@ In short, all diarization methods suck. They work well in a controlled environme
 
 Diarization caused most of the data loss. And I really want to make diarization better. Maybe in the future I will try to finetune an existing diarization model for call recordings. Or perhaps build and train my own transformer-based LLM from scratch. Or maybe I'll be too lazy to do anything.
 
-> **Note:** I won't be actively maintaining this project going forward. Please don't bother filing issues — if you run into bugs, the best path is to fix them yourself and raise a PR.
+> [!NOTE]
+> I won't be actively maintaining this project going forward. Please don't bother filing issues — if you run into bugs, the best path is to fix them yourself and raise a PR.
 
 ## FAQ
 
@@ -156,10 +157,10 @@ I do not trust big corporations with my data (especially before the scrub stage)
 I speak a dialect of Marathi that's different from actual Marathi. The diarization model I used was trained on standard Marathi, so it introduces some errors in the transcription. I tried to find text in my dialect to use above, but couldn't, so I fell back to standard Marathi. For these reasons, the Marathi inference is not that good.
 
 **Can I get the finetuned model weights?**<br>
-Unfortunately, no. Due to security concerns, I can't share the finetuned model weights. If you still think you can convince me to share weights/audio, please reach out to me at dcunha.cyprien@gmail.com.
+Unfortunately, no. Due to security concerns, I can't share the finetuned model weights. If you still think you can convince me to share weights/audio, please reach out to me.
 
 **What security concerns are you talking about?**<br>
 The model might be used to generate fake voice clips that could be used to impersonate me in other contexts. Despite removing PII from the dataset, some other personal information might still be extracted using LLM attacks.
 
-**Want to hire me?**<br>
+**I have questions? or Want to connect with me or hire me?**<br>
 Sure, reach out to me at dcunha.cyprien@gmail.com.
